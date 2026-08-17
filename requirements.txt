@@ -1,0 +1,6 @@
+pypdf
+reportlab
+pywin32
+PyMuPDF
+pdf2image
+Pillow
