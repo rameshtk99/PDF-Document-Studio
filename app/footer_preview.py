@@ -23,7 +23,8 @@ from typing import Optional
 
 from models import FooterConfig
 from pdf.white_space_detector import WhiteSpaceDetector
-from pdf.document_exporter import compute_content_relative_bottom_margin
+from pdf.document_exporter import (compute_content_relative_bottom_margin,
+                                    SAFETY_GAP_PT, FOOTER_PHYSICAL_MARGIN_PT)
 
 
 class FooterPreviewController:
@@ -95,7 +96,8 @@ class FooterPreviewController:
                                                  configured_size_px, col_w_px)
         fitted_size_pt = (fitted_size_px / scale) if scale else cfg.font_size
 
-        bottom_margin = self._effective_bottom_margin(doc, current_page, page_h, cfg, fitted_size_pt)
+        bottom_margin, will_compress = self._effective_bottom_margin(
+            doc, current_page, page_h, cfg, fitted_size_pt)
         y_line2 = bottom_margin + fitted_size_pt
         y_line1 = y_line2 + fitted_size_pt + cfg.line_gap
 
@@ -118,13 +120,23 @@ class FooterPreviewController:
                 canvas.create_text(cx, cy2, text=line2, fill='black',
                                     font=font_obj, tags="footer_preview")
 
-        # Only the faint dashed box (not the text) marks this as a preview.
+        # Dashed outline marks this as a preview.
+        # Orange = export will compress this page's content to fit the footer.
+        # Blue   = content already has enough whitespace; no compression needed.
+        box_color = '#cc6600' if will_compress else '#0066cc'
         top_y = (page_h - (y_line1 + fitted_size_pt)) * scale + off_y
         bottom_y = (page_h - bottom_margin + fitted_size_pt) * scale + off_y
         left_x = cfg.left_margin * scale + off_x
         right_x = (page_w - cfg.right_margin) * scale + off_x
-        canvas.create_rectangle(left_x, top_y, right_x, bottom_y, outline='#0066cc',
+        canvas.create_rectangle(left_x, top_y, right_x, bottom_y, outline=box_color,
                                  dash=(3, 2), tags="footer_preview")
+        if will_compress:
+            label_x = (left_x + right_x) / 2
+            label_y = top_y - 10
+            canvas.create_text(label_x, label_y,
+                                text="⚠ page will be compressed on export",
+                                fill=box_color, font=('TkDefaultFont', 8),
+                                tags="footer_preview")
 
     def _fit_font_size_px(self, resolved_items, font_name: str, configured_size_px: int,
                            col_w_px: float, min_size_px: int = 6, padding_px: float = 4.0) -> int:
@@ -143,20 +155,35 @@ class FooterPreviewController:
         return min_size_px
 
     def _effective_bottom_margin(self, doc, page_number: int, page_h: float,
-                                  cfg: FooterConfig, rendered_font_size_pt: float) -> float:
-        """Mirrors DocumentExporter's content-relative positioning: float
-        the footer up to just below the actual content (plus the
-        configured gap) when the page has a lot of blank space at the
-        bottom, instead of always pinning it to the far page edge.
-        Uses the actually-rendered (auto-fitted) font size, not the raw
-        configured one, so the reserved height matches what's drawn."""
+                                  cfg: FooterConfig,
+                                  rendered_font_size_pt: float) -> tuple:
+        """Return (renderer_bottom_margin, will_compress).
+
+        Mirrors DocumentExporter's two-path logic:
+          - No-shrink: footer floats just below content, will_compress=False.
+          - Shrink: footer at page bottom (0.0), will_compress=True so the
+            caller can draw a warning indicator in the preview.
+        """
         try:
             detector = self._get_detector(doc.pdf_path)
             analysis = detector.analyze_page(page_number)
         except Exception:
             analysis = None
-        return compute_content_relative_bottom_margin(
+
+        if analysis is not None:
+            available_pts = page_h * (analysis.bottom_margin / 100.0)
+            required_height = (cfg.bottom_margin
+                                + 2 * rendered_font_size_pt
+                                + cfg.line_gap
+                                + SAFETY_GAP_PT
+                                + FOOTER_PHYSICAL_MARGIN_PT)
+            compress = getattr(cfg, 'compress_content', True)
+            if available_pts < required_height and compress:
+                return FOOTER_PHYSICAL_MARGIN_PT, True
+
+        margin = compute_content_relative_bottom_margin(
             page_h, analysis, cfg.bottom_margin, rendered_font_size_pt, cfg.line_gap)
+        return margin, False
 
     def _get_detector(self, pdf_path: str) -> WhiteSpaceDetector:
         if self._detector is None or self._detector_path != pdf_path:

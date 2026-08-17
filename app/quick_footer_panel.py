@@ -56,8 +56,9 @@ class QuickFooterPanel(tk.Frame):
         self.font_var = tk.StringVar(value=self.fonts_available[0])
         self.font_size_var = tk.IntVar(value=FOOTER_DEFAULT_FONT_SIZE)
         self.col_count_var = tk.IntVar(value=FOOTER_DEFAULT_COLUMNS)
-        self.gap_var = tk.DoubleVar(value=0.3)
+        self.gap_var = tk.DoubleVar(value=1.0)
         self.line_gap_var = tk.DoubleVar(value=4.0)
+        self.compress_var = tk.BooleanVar(value=True)
         self.footer_entries = []
         self.entry_widgets = []
         self.entries_frame: Optional[tk.Frame] = None
@@ -91,14 +92,14 @@ class QuickFooterPanel(tk.Frame):
         gap_frame = tk.Frame(self)
         gap_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=3)
         tk.Label(gap_frame, text="Gap below content:").pack(side=tk.LEFT)
-        tk.Spinbox(gap_frame, from_=0.1, to=2.0, increment=0.05, textvariable=self.gap_var,
+        tk.Spinbox(gap_frame, from_=0.1, to=4.0, increment=0.05, textvariable=self.gap_var,
                    width=5, command=self._on_setting_changed).pack(side=tk.LEFT, padx=4)
         tk.Label(gap_frame, text="in").pack(side=tk.LEFT)
 
         line_gap_frame = tk.Frame(self)
         line_gap_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 3))
         tk.Label(line_gap_frame, text="Line 1 ↔ Line 2 spacing:").pack(side=tk.LEFT)
-        tk.Spinbox(line_gap_frame, from_=0, to=30, increment=1, textvariable=self.line_gap_var,
+        tk.Spinbox(line_gap_frame, from_=0, to=100, increment=1, textvariable=self.line_gap_var,
                    width=5, command=self._on_setting_changed).pack(side=tk.LEFT, padx=4)
         tk.Label(line_gap_frame, text="pt").pack(side=tk.LEFT)
 
@@ -106,6 +107,13 @@ class QuickFooterPanel(tk.Frame):
                              "a normal keyboard types plain English no matter which font is set.",
                  fg='gray30', font=('Arial', 7), wraplength=310, justify=tk.LEFT
                  ).pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4), anchor='w')
+
+        shrink_frame = tk.Frame(self)
+        shrink_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 3))
+        tk.Checkbutton(shrink_frame, text="Auto-shrink page content to fit footer",
+                       variable=self.compress_var,
+                       command=self._on_setting_changed
+                       ).pack(side=tk.LEFT)
 
         col_frame = tk.Frame(self)
         col_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=3)
@@ -147,6 +155,7 @@ class QuickFooterPanel(tk.Frame):
         self.font_size_var.set(cfg.font_size)
         self.gap_var.set(round(cfg.bottom_margin / INCH_TO_PDF_POINT, 3))
         self.line_gap_var.set(cfg.line_gap)
+        self.compress_var.set(getattr(cfg, 'compress_content', True))
         self._suspend = False
         self._set_columns(preserve_values=cfg.text_columns)
 
@@ -218,6 +227,7 @@ class QuickFooterPanel(tk.Frame):
             text_columns=columns[:5],
             bottom_margin=gap_pt,
             line_gap=line_gap_pt,
+            compress_content=self.compress_var.get(),
         )
 
     def _current_viewer_page(self) -> int:

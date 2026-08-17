@@ -11,7 +11,7 @@ ImageManager / Document, so Ctrl+Z / Ctrl+Y really move, resize, add,
 delete, or change properties of objects and footer settings.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.undo_redo import Command
 from pdf.image_manager import ImageManager, ImagePlacement
@@ -158,6 +158,162 @@ class DeleteObjectCommand(Command):
     def undo(self):
         self.image_id = self.manager.add_image_to_page(
             self.page_number, self.placement, self.image_path)
+
+    def redo(self):
+        self.execute()
+
+
+class GroupCommand(Command):
+    """Set or clear group_id on a set of images (Group / Ungroup)."""
+
+    def __init__(self, manager: ImageManager, image_ids: List[str],
+                 new_group_id: Optional[str]):
+        super().__init__()
+        self.manager = manager
+        self.image_ids = list(image_ids)
+        self.new_group_id = new_group_id
+        self._old_group_ids: Dict[str, Optional[str]] = {}
+        self.description = "Group images" if new_group_id else "Ungroup images"
+
+    def execute(self):
+        for image_id in self.image_ids:
+            obj = self.manager.get_image_object(image_id)
+            if obj:
+                self._old_group_ids[image_id] = obj.group_id
+                obj.group_id = self.new_group_id
+
+    def undo(self):
+        for image_id, old_gid in self._old_group_ids.items():
+            obj = self.manager.get_image_object(image_id)
+            if obj:
+                obj.group_id = old_gid
+
+    def redo(self):
+        for image_id in self.image_ids:
+            obj = self.manager.get_image_object(image_id)
+            if obj:
+                obj.group_id = self.new_group_id
+
+
+class MoveManyCommand(Command):
+    """Move multiple objects; moves is {image_id: (from_x, from_y, to_x, to_y)}."""
+
+    def __init__(self, manager: ImageManager,
+                 moves: Dict[str, Tuple[float, float, float, float]]):
+        super().__init__()
+        self.manager = manager
+        self.moves = moves
+        self.description = f"Move {len(moves)} object(s)"
+
+    def execute(self):
+        for image_id, (_, _, tx, ty) in self.moves.items():
+            self.manager.set_image_position(image_id, tx, ty)
+
+    def undo(self):
+        for image_id, (fx, fy, _, _) in self.moves.items():
+            self.manager.set_image_position(image_id, fx, fy)
+
+    def redo(self):
+        self.execute()
+
+
+class TransformManyCommand(Command):
+    """Resize/reposition multiple objects; before/after are {id: (x,y,w,h)}."""
+
+    def __init__(self, manager: ImageManager,
+                 before: Dict[str, Tuple[float, float, float, float]],
+                 after: Dict[str, Tuple[float, float, float, float]]):
+        super().__init__()
+        self.manager = manager
+        self.before = before
+        self.after = after
+        self.description = f"Resize {len(before)} object(s)"
+
+    def execute(self):
+        for image_id, (x, y, w, h) in self.after.items():
+            self.manager.set_image_position(image_id, x, y)
+            self.manager.set_image_size(image_id, w, h)
+
+    def undo(self):
+        for image_id, (x, y, w, h) in self.before.items():
+            self.manager.set_image_position(image_id, x, y)
+            self.manager.set_image_size(image_id, w, h)
+
+    def redo(self):
+        self.execute()
+
+
+class RotateManyCommand(Command):
+    """Rotate/reposition multiple objects; before/after are {id: (x,y,w,h,rotation)}."""
+
+    def __init__(self, manager: ImageManager,
+                 before: Dict[str, Tuple[float, float, float, float, float]],
+                 after: Dict[str, Tuple[float, float, float, float, float]]):
+        super().__init__()
+        self.manager = manager
+        self.before = before
+        self.after = after
+        self.description = f"Rotate {len(before)} object(s)"
+
+    def execute(self):
+        for image_id, (x, y, w, h, rot) in self.after.items():
+            self.manager.set_image_position(image_id, x, y)
+            self.manager.set_image_size(image_id, w, h)
+            self.manager.set_image_property(image_id, 'rotation', rot)
+
+    def undo(self):
+        for image_id, (x, y, w, h, rot) in self.before.items():
+            self.manager.set_image_position(image_id, x, y)
+            self.manager.set_image_size(image_id, w, h)
+            self.manager.set_image_property(image_id, 'rotation', rot)
+
+    def redo(self):
+        self.execute()
+
+
+class PasteObjectsCommand(Command):
+    """Paste copies of objects (from clipboard snapshots) onto a page."""
+
+    def __init__(self, manager: ImageManager, page_number: int,
+                 snapshots: List[dict]):
+        super().__init__()
+        self.manager = manager
+        self.page_number = page_number
+        self.snapshots = snapshots
+        self.added_ids: List[str] = []
+        self.description = f"Paste {len(snapshots)} object(s) to page {page_number}"
+
+    def execute(self):
+        self.added_ids = []
+        # Remap group IDs so pasted objects form their own groups,
+        # independent of the originals.
+        gid_map: Dict[str, str] = {}
+        import uuid
+        for snap in self.snapshots:
+            old_gid = snap.get('group_id')
+            if old_gid and old_gid not in gid_map:
+                gid_map[old_gid] = str(uuid.uuid4())
+
+        for snap in self.snapshots:
+            placement = ImagePlacement(
+                page_number=self.page_number,
+                x=snap['x'], y=snap['y'],
+                width=snap['width'], height=snap['height'],
+                rotation=snap['rotation'], opacity=snap['opacity'],
+                z_index=snap['z_index'],
+            )
+            image_id = self.manager.add_image_to_page(
+                self.page_number, placement, snap.get('image_path', ''))
+            obj = self.manager.get_image_object(image_id)
+            if obj:
+                old_gid = snap.get('group_id')
+                obj.group_id = gid_map.get(old_gid) if old_gid else None
+            self.added_ids.append(image_id)
+
+    def undo(self):
+        for image_id in self.added_ids:
+            self.manager.remove_image(image_id)
+        self.added_ids = []
 
     def redo(self):
         self.execute()

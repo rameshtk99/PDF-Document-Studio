@@ -17,11 +17,12 @@ class PageObject:
     y: float = 0.0  # PDF points
     width: float = 100.0
     height: float = 100.0
-    rotation: float = 0.0  # degrees
+    rotation: float = 0.0  # degrees, clockwise
     opacity: float = 100.0  # 0-100%
     z_index: int = 0
     locked: bool = False
     visible: bool = True
+    group_id: Optional[str] = None  # None = ungrouped; shared value = same group
     properties: Dict[str, Any] = field(default_factory=dict)  # type, path, text, etc.
 
 
@@ -34,9 +35,10 @@ class FooterConfig:
     font_size: int = 13
     left_margin: float = 36.0  # points
     right_margin: float = 36.0  # points
-    bottom_margin: float = 24.0  # points
+    bottom_margin: float = 72.0  # points (gap between content bottom and footer top; 72pt = 1 inch)
     line_gap: float = 4.0  # points
-    
+    compress_content: bool = True  # shrink page content to fit footer when needed
+
     def __post_init__(self):
         if not self.text_columns:
             self.text_columns = [("", "")] * 5  # Default 5 columns
@@ -93,15 +95,17 @@ class Document:
         
         # Create default page config from global settings
         config = PageConfig(page_number=page_num)
+        g = self.global_settings.footer_config
         config.footer_config = FooterConfig(
-            enabled=self.global_settings.footer_config.enabled,
-            text_columns=self.global_settings.footer_config.text_columns.copy(),
-            font_name=self.global_settings.footer_config.font_name,
-            font_size=self.global_settings.footer_config.font_size,
-            left_margin=self.global_settings.footer_config.left_margin,
-            right_margin=self.global_settings.footer_config.right_margin,
-            bottom_margin=self.global_settings.footer_config.bottom_margin,
-            line_gap=self.global_settings.footer_config.line_gap,
+            enabled=g.enabled,
+            text_columns=g.text_columns.copy(),
+            font_name=g.font_name,
+            font_size=g.font_size,
+            left_margin=g.left_margin,
+            right_margin=g.right_margin,
+            bottom_margin=g.bottom_margin,
+            line_gap=g.line_gap,
+            compress_content=g.compress_content,
         )
         config.auto_layout = self.global_settings.auto_layout
         config.preserve_original = self.global_settings.preserve_original

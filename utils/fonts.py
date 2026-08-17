@@ -25,21 +25,73 @@ def ensure_reportlab_available():
     return True
 
 
+def _find_font_file(filename: str) -> str:
+    """Search project root then standard system font directories for a TTF file.
+    Returns the full path if found, empty string otherwise."""
+    candidates = [
+        os.path.join(PROJECT_ROOT, filename),
+        os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts', filename),
+        os.path.join(os.path.expanduser('~'), 'AppData', 'Local',
+                     'Microsoft', 'Windows', 'Fonts', filename),
+        os.path.join('/usr/share/fonts', filename),
+        os.path.join('/usr/local/share/fonts', filename),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    # Case-insensitive fallback: scan the Windows Fonts directory
+    win_fonts = os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts')
+    if os.path.isdir(win_fonts):
+        low = filename.lower()
+        for entry in os.scandir(win_fonts):
+            if entry.name.lower() == low and entry.is_file():
+                return entry.path
+    return ''
+
+
 def register_custom_fonts():
-    """Register custom TTF fonts (e.g., Nepali fonts)"""
+    """Register Nepali/custom TTF fonts with reportlab.
+
+    Searches the project root, the Windows Fonts directory, and the
+    current user's font directory so fonts like Preeti (preeti.ttf)
+    are found even when they are installed system-wide rather than
+    placed next to the application.
+    """
     if not ensure_reportlab_available():
         return
-    
-    # Try to register Preeti font if it exists
-    preeti_path = os.path.join(PROJECT_ROOT, 'preeti.ttf')
-    if os.path.exists(preeti_path) and _pdfmetrics and _TTFont:
-        try:
-            if 'Preeti' not in _registered_fonts:
-                _pdfmetrics.registerFont(_TTFont('Preeti', preeti_path))
-                _registered_fonts.add('Preeti')
-                FONT_MAPPING['Preeti'] = 'Preeti'
-        except Exception as e:
-            print(f"Warning: Could not register Preeti font: {e}")
+
+    # All fonts shown in the UI combobox: each entry is (display name) → (TTF filename).
+    # Nepali fonts must be embedded as TTF for correct glyph mapping.
+    # System fonts are also registered directly so the PDF uses the actual typeface
+    # rather than the built-in Type1 approximation (Helvetica, Times-Roman, etc.).
+    # Fonts not found on this machine keep their existing FONT_MAPPING fallback.
+    fonts_to_register = {
+        # Nepali / legacy
+        'Preeti':          'preeti.ttf',
+        'Ganesh':          'ganesh.ttf',
+        'Kantipur':        'kantipur.ttf',
+        # Windows system fonts
+        'Arial':           'arial.ttf',
+        'Times New Roman': 'times.ttf',
+        'Courier New':     'cour.ttf',
+        'Verdana':         'verdana.ttf',
+        'Tahoma':          'tahoma.ttf',
+        'Georgia':         'georgia.ttf',
+        'Calibri':         'calibri.ttf',
+    }
+
+    for font_name, ttf_filename in fonts_to_register.items():
+        if font_name in _registered_fonts:
+            continue
+        path = _find_font_file(ttf_filename)
+        if path and _pdfmetrics and _TTFont:
+            try:
+                _pdfmetrics.registerFont(_TTFont(font_name, path))
+                _registered_fonts.add(font_name)
+                FONT_MAPPING[font_name] = font_name
+                print(f"Registered font '{font_name}' from {path}")
+            except Exception as e:
+                print(f"Warning: Could not register '{font_name}' ({path}): {e}")
 
 
 def get_reportlab_font(font_name):

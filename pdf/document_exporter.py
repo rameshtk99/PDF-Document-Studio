@@ -8,8 +8,9 @@ Document's per-page configuration so:
 - each page can have its own footer text/font/columns (or none at all)
 - each page is checked independently for whether it has enough bottom
   white-space for its own footer, using WhiteSpaceDetector
-- only pages that actually lack space receive the minimum necessary
-  layout adjustment -- there is no global shrink percentage
+- pages that lack space receive a per-page vertical compression so the
+  original content is scaled up to fit above the footer -- there is no
+  single global shrink percentage; every page is handled independently
 - image objects placed on a page are embedded into the real output PDF
 
 This module never touches FooterGenerator.add_footer_to_pdf or the CLI
@@ -24,48 +25,57 @@ from pdf.pdf_handler import PDFHandler, FooterGenerator
 from pdf.white_space_detector import WhiteSpaceDetector
 from utils.fonts import get_reportlab_font
 
-# Extra breathing room added on top of the raw footer text height, so the
-# footer never sits flush against the last line of page content.
+# Extra breathing room between the top of the footer block and the last
+# line of page content, so they never sit flush against each other.
 SAFETY_GAP_PT = 6.0
 
-# Never compress a page's content by more than half, no matter how large
-# the deficit -- beyond this point auto-adjustment stops being "safe".
-MIN_ADJUSTMENT_RATIO = 0.5
+# Minimum physical distance from the page's bottom edge to the footer's
+# lower edge.  18 pt ≈ ¼ inch -- well inside the printable area of even
+# the most conservative laser/inkjet printers.
+FOOTER_PHYSICAL_MARGIN_PT = 18.0
 
 
 def compute_content_relative_bottom_margin(page_height_pt: float, analysis,
                                             configured_gap_pt: float,
                                             font_size_pt: float, line_gap_pt: float,
-                                            safety_gap_pt: float = SAFETY_GAP_PT) -> float:
-    """Where the footer's `bottom_margin` term should actually be, so the
-    footer's TOP edge sits `configured_gap_pt` below wherever the page's
-    content ends -- not pinned to a fixed distance from the page's far
-    bottom edge, which looks wrong on a page that's mostly blank (e.g.
-    only the top 25% has content: the footer ends up stranded far below
-    it with an awkward gap).
+                                            safety_gap_pt: float = SAFETY_GAP_PT,
+                                            physical_margin_pt: float = FOOTER_PHYSICAL_MARGIN_PT) -> float:
+    """Physical renderer bottom_margin (distance from page bottom to footer's
+    lower edge) that places the footer's visual top exactly configured_gap_pt
+    below the page's actual content bottom, while keeping the footer at least
+    physical_margin_pt away from the physical page edge (printer safety zone).
 
-    `bottom_margin` measures from the page's absolute bottom edge (y=0)
-    to just under line 2, but the footer block actually extends further
-    up from there -- line 2's height, the line gap, line 1's height, and
-    a safety buffer (mirroring the same `2*font_size + line_gap +
-    safety_gap` term used to decide whether a page needs shrinking at
-    all). That extra height has to be subtracted out here, otherwise the
-    footer's top ends up sitting *inside* the content instead of below
-    it by the intended gap -- this was tried without the subtraction
-    first and produced exactly that overlap on pages with less spare
-    white-space than others.
+    Two concepts are explicitly separated:
+      - configured_gap_pt  : gap between content bottom and footer top (user setting)
+      - renderer_bottom_margin : physical distance from page bottom to footer bottom
+        (computed; always >= physical_margin_pt so text is never in the gutter)
 
-    When content already reaches close to the bottom, this collapses
-    back to the same fixed, safe distance from the page's true bottom
-    edge (content-bottom and page-bottom are nearly the same edge in
-    that case), so dense pages are unaffected.
+    In the shrink case (insufficient whitespace), returns physical_margin_pt so
+    the footer sits at the printer-safe minimum position after the content
+    transform is applied by _apply_whitespace_adjustment.
+
+    Falls back to configured_gap_pt when whitespace analysis is unavailable.
     """
     if analysis is None:
         return configured_gap_pt
+
     content_bottom_pt = page_height_pt * (analysis.bottom_margin / 100.0)
     footer_block_height_pt = 2 * font_size_pt + line_gap_pt + safety_gap_pt
-    candidate = content_bottom_pt - configured_gap_pt - footer_block_height_pt
-    return max(configured_gap_pt, candidate)
+    # Include physical_margin_pt in required_height so the no-shrink formula
+    # automatically guarantees renderer_bottom_margin >= physical_margin_pt.
+    required_height = configured_gap_pt + footer_block_height_pt + physical_margin_pt
+
+    if content_bottom_pt < required_height:
+        # Shrink case: export will compress content; footer at printer-safe minimum.
+        return physical_margin_pt
+
+    # No-shrink case: float the footer just below actual content.
+    # renderer_bottom_margin = content_bottom - configured_gap - footer_block
+    # which equals physical_margin_pt + (content_bottom - required_height),
+    # guaranteed >= physical_margin_pt since content_bottom >= required_height here.
+    candidate = content_bottom_pt - required_height  # >= 0
+    return physical_margin_pt + candidate
+
 
 _PdfReader = None
 _PdfWriter = None
@@ -158,61 +168,114 @@ class DocumentExporter:
 
     def _apply_whitespace_adjustment(self, page, page_num, page_h, footer_config,
                                       page_config, doc, detector, Transformation, result) -> float:
-        """Decide whether this single page needs a minimum layout
-        adjustment to fit its own footer, applying it in-place on `page`
-        if so, and return the bottom margin the footer should actually be
-        drawn at. Mutates `result` with an auditable note for this page.
+        """Decide whether this page needs content compression to fit its footer.
+
+        When the page already has enough white-space below its content the
+        footer is placed dynamically close to that content (content-relative
+        placement) without touching the page at all.
+
+        When the content extends into the footer zone (deficit > 0) the page
+        content stream is scaled vertically and shifted up so the content
+        bottom lands exactly at the top of the footer zone, then the footer
+        overlay is placed at the configured bottom_margin as normal. The
+        overlay is appended after the transformed content stream, so it is
+        never affected by the transform.
         """
         required_height = (footer_config.bottom_margin
                             + 2 * footer_config.font_size
                             + footer_config.line_gap
-                            + SAFETY_GAP_PT)
+                            + SAFETY_GAP_PT
+                            + FOOTER_PHYSICAL_MARGIN_PT)
 
         analysis = detector.analyze_page(page_num)
-        available_pts = 0.0
-        if analysis is not None:
-            available_pts = (analysis.bottom_margin / 100.0) * page_h
 
+        if analysis is None:
+            result.per_page_notes[page_num] = (
+                f"Page {page_num}: whitespace analysis unavailable; "
+                f"footer placed at configured margin."
+            )
+            return footer_config.bottom_margin
+
+        available_pts = (analysis.bottom_margin / 100.0) * page_h
         deficit = required_height - available_pts
 
         if deficit <= 0:
+            # Enough room: place footer just below the actual content.
             effective_margin = compute_content_relative_bottom_margin(
                 page_h, analysis, footer_config.bottom_margin,
                 footer_config.font_size, footer_config.line_gap)
             result.per_page_notes[page_num] = (
-                f"Sufficient white-space (required {required_height:.0f}pt, "
-                f"available {available_pts:.0f}pt) - no adjustment, "
-                f"footer positioned {effective_margin:.0f}pt from bottom."
+                f"Sufficient space (required {required_height:.0f}pt, "
+                f"available {available_pts:.0f}pt). "
+                f"Footer placed at {effective_margin:.0f}pt from bottom."
             )
             return effective_margin
 
-        note = (f"Required {required_height:.0f}pt, available {available_pts:.0f}pt, "
-                f"deficit {deficit:.0f}pt. ")
-
-        can_adjust = page_config.auto_layout and doc.global_settings.allow_page_shrinking
-        if not can_adjust:
-            note += "Auto-adjustment disabled -- footer may overlap page content."
-            result.warnings.append(
-                f"Page {page_num}: insufficient white-space for footer and auto-adjustment is off."
+        if not getattr(footer_config, 'compress_content', True):
+            # Compression disabled: place footer at the content-relative position
+            # even if it overlaps -- the user has explicitly opted out of shrinking.
+            effective_margin = compute_content_relative_bottom_margin(
+                page_h, analysis, footer_config.bottom_margin,
+                footer_config.font_size, footer_config.line_gap)
+            result.per_page_notes[page_num] = (
+                f"Page {page_num}: compression disabled; footer placed at "
+                f"{effective_margin:.0f}pt (deficit {deficit:.0f}pt ignored)."
             )
-            result.per_page_notes[page_num] = note
+            return effective_margin
+
+        # Deficit: content overlaps the footer zone.
+        # Apply MINIMUM-necessary vertical compression so the actual content
+        # bottom (at available_pts from the page bottom) is lifted exactly to
+        # required_height, leaving the configured gap between it and the footer.
+        #
+        # Minimum compression anchors the page TOP at page_h (page top stays):
+        #   scale_y = (page_h - required_height) / (page_h - available_pts)
+        #   translate_y = page_h * (1 - scale_y)
+        #
+        # Verification:
+        #   y=available_pts → scale_y*available_pts + translate_y = required_height ✓
+        #   y=page_h        → scale_y*page_h + translate_y = page_h              ✓
+        #
+        # This is strictly less aggressive than the naïve formula
+        # ratio=(page_h-required_height)/page_h which anchors at y=0 and
+        # over-compresses pages that have whitespace at the bottom.
+        #
+        # The overlay is appended after the transformed content stream, so the
+        # footer sits at absolute page coordinates, unaffected by the transform.
+        denominator = page_h - available_pts
+        if denominator <= 0:
+            # Guard: page is all blank (unreachable when deficit>0, but be safe).
+            result.per_page_notes[page_num] = (
+                f"Page {page_num}: all-blank page, no compression needed."
+            )
             return footer_config.bottom_margin
 
-        max_deficit = page_h * (1 - MIN_ADJUSTMENT_RATIO)
-        applied_deficit = min(deficit, max_deficit)
-        ratio = (page_h - applied_deficit) / page_h
-
-        page.add_transformation(Transformation().scale(1, ratio).translate(0, applied_deficit))
-        result.adjusted_pages.append(page_num)
-
-        if applied_deficit < deficit:
-            note += (f"Applied maximum safe adjustment ({applied_deficit:.0f}pt); "
-                      f"footer may still be tight.")
+        scale_y = (page_h - required_height) / denominator
+        if scale_y <= 0:
             result.warnings.append(
-                f"Page {page_num}: could not fully fit footer even at maximum safe shrinkage."
+                f"Page {page_num}: footer height ({required_height:.0f}pt) equals or "
+                f"exceeds page height ({page_h:.0f}pt) — no transform applied."
             )
-        else:
-            note += f"Applied minimum necessary layout adjustment ({applied_deficit:.0f}pt)."
+            result.per_page_notes[page_num] = (
+                f"Page {page_num}: cannot compress — required_height ({required_height:.0f}pt) "
+                f">= page_h ({page_h:.0f}pt)."
+            )
+            return footer_config.bottom_margin
 
-        result.per_page_notes[page_num] = note
-        return footer_config.bottom_margin
+        translate_y = page_h * (1.0 - scale_y)
+        page.add_transformation(
+            Transformation().scale(1, scale_y).translate(0, translate_y)
+        )
+        result.adjusted_pages.append(page_num)
+        result.per_page_notes[page_num] = (
+            f"Page {page_num}: content compressed {(1 - scale_y) * 100:.1f}% vertically "
+            f"to clear footer zone "
+            f"(content_bottom {available_pts:.0f}pt → {required_height:.0f}pt, "
+            f"deficit {deficit:.0f}pt, scale_y {scale_y:.4f})."
+        )
+        # After the transform, content bottom is at y=required_height from page bottom.
+        # Footer placed at FOOTER_PHYSICAL_MARGIN_PT from the page edge so the text
+        # stays within the printer's printable area.  The gap between content bottom
+        # (y=required_height) and footer visual top (≈ FOOTER_PHYSICAL_MARGIN_PT +
+        # footer_block_height) equals the configured content_gap_pt. ✓
+        return FOOTER_PHYSICAL_MARGIN_PT

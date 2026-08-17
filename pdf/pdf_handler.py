@@ -221,7 +221,12 @@ class FooterGenerator:
 
     @staticmethod
     def _draw_image_object(c, obj):
-        """Draw a single image PageObject onto an in-progress reportlab canvas
+        """Draw a single image PageObject onto an in-progress reportlab canvas.
+
+        Rotation is applied to the PIL image before drawing (expand=True so no
+        corners are clipped), then the rotated image is letterboxed into the
+        bounding box, preserving aspect ratio. This keeps preview and export
+        visually identical.
 
         Silently skips objects that are invisible, missing an image path,
         or whose file cannot be opened -- an image problem must never abort
@@ -243,20 +248,21 @@ class FooterGenerator:
                 alpha = pil_img.split()[3].point(lambda p: int(p * opacity / 100.0))
                 pil_img.putalpha(alpha)
 
-            c.saveState()
-            cx = obj.x + obj.width / 2.0
-            cy = obj.y + obj.height / 2.0
-            c.translate(cx, cy)
             rotation = getattr(obj, 'rotation', 0.0)
             if rotation:
-                c.rotate(rotation)
-            c.drawImage(
-                _ImageReader(pil_img),
-                -obj.width / 2.0, -obj.height / 2.0,
-                obj.width, obj.height,
-                mask='auto'
-            )
-            c.restoreState()
+                # Rotate the PIL image (expand=True: full image, no corner clipping).
+                # Then letterbox into the bounding box, centered, aspect-preserved.
+                pil_img = pil_img.rotate(-rotation, expand=True, resample=Image.BICUBIC)
+                img_w, img_h = pil_img.size
+                box_w, box_h = obj.width, obj.height
+                s = min(box_w / img_w, box_h / img_h) if (img_w > 0 and img_h > 0) else 1.0
+                draw_w = img_w * s
+                draw_h = img_h * s
+                draw_x = obj.x + (box_w - draw_w) / 2.0
+                draw_y = obj.y + (box_h - draw_h) / 2.0
+                c.drawImage(_ImageReader(pil_img), draw_x, draw_y, draw_w, draw_h, mask='auto')
+            else:
+                c.drawImage(_ImageReader(pil_img), obj.x, obj.y, obj.width, obj.height, mask='auto')
         except Exception as e:
             print(f"Warning: could not draw image object {getattr(obj, 'id', '?')} "
                   f"({image_path}): {e}")

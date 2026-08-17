@@ -10,9 +10,10 @@ Provides an embedded PDF viewer with:
 - Thumbnail panel for quick page navigation
 """
 
+import bisect
 import tkinter as tk
 from tkinter import messagebox
-from typing import Optional, Callable, List, Dict, Set
+from typing import Optional, Callable, List, Dict, Set, Tuple
 import threading
 import PIL.Image
 import PIL.ImageTk
@@ -32,21 +33,27 @@ class ThumbnailPanel(tk.Frame):
     - Scrollable frame for PDFs with many pages
     """
     
-    def __init__(self, parent, document: Optional[Document] = None, 
-                 on_page_selected: Optional[Callable] = None, **kwargs):
+    def __init__(self, parent, document: Optional[Document] = None,
+                 on_page_selected: Optional[Callable] = None,
+                 on_scroll_page_changed: Optional[Callable[[int], None]] = None, **kwargs):
         """
         Initialize thumbnail panel
-        
+
         Args:
             parent: Parent widget
             document: Document object
             on_page_selected: Callback function(page_num) when page clicked
+            on_scroll_page_changed: Callback function(page_num) fired when
+                scrolling (wheel or scrollbar drag) brings a different page's
+                thumbnail to the top -- lets the main view follow along, the
+                same way the main view scrolls this panel's list.
             **kwargs: Additional frame arguments
         """
         super().__init__(parent, **kwargs)
-        
+
         self.document = document
         self.on_page_selected = on_page_selected
+        self.on_scroll_page_changed = on_scroll_page_changed
         self.current_page = 1
         self.selected_pages: Set[int] = set()
         self.thumbnail_buttons: Dict[int, tk.Button] = {}
@@ -71,11 +78,14 @@ class ThumbnailPanel(tk.Frame):
         # Scrollbar
         scrollbar = tk.Scrollbar(self, orient=tk.VERTICAL)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         # Canvas for scrolling
-        self.canvas = tk.Canvas(self, bg='lightgray', highlightthickness=0, 
+        self.canvas = tk.Canvas(self, bg='lightgray', highlightthickness=0,
                                yscrollcommand=scrollbar.set, width=150)
-        scrollbar.config(command=self.canvas.yview)
+        # command=self._on_scrollbar_scroll rather than plain
+        # self.canvas.yview -- dragging the thumb (not just wheel
+        # scrolling) must also notify the main view to follow along.
+        scrollbar.config(command=self._on_scrollbar_scroll)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2, pady=2)
         
         # Frame inside canvas to hold thumbnails
@@ -281,7 +291,46 @@ class ThumbnailPanel(tk.Frame):
             self.canvas.yview_scroll(3, "units")
         else:
             self.canvas.yview_scroll(-3, "units")
-    
+        self._notify_scroll_page_changed()
+
+    def _on_scrollbar_scroll(self, *args):
+        """Scrollbar command callback -- fires on thumb drag, track click,
+        and arrow clicks (bypasses _on_mousewheel entirely).
+        """
+        self.canvas.yview(*args)
+        self._notify_scroll_page_changed()
+
+    def _topmost_visible_page(self) -> Optional[int]:
+        """Page number whose thumbnail is closest to the current top of the
+        scrollable view -- used to figure out what to report to the main
+        viewer as "the page you scrolled to" (as opposed to clicked).
+        """
+        if not self.thumbnail_frames:
+            return None
+        bbox = self.canvas.bbox("all")
+        if not bbox:
+            return None
+        total_height = bbox[3] - bbox[1]
+        if total_height <= 0:
+            return None
+        view_top_px = self.canvas.yview()[0] * total_height
+        return min(self.thumbnail_frames.items(),
+                   key=lambda kv: abs(kv[1].winfo_y() - view_top_px))[0]
+
+    def _notify_scroll_page_changed(self):
+        """After a user-driven scroll of the thumbnail list, update the
+        highlight and tell the main viewer to follow -- but without calling
+        set_current_page()/its _scroll_to_page(), which would fight the
+        scroll position the user is actively setting.
+        """
+        page_num = self._topmost_visible_page()
+        if page_num is None or page_num == self.current_page:
+            return
+        self.current_page = page_num
+        self._update_thumbnail_highlights()
+        if self.on_scroll_page_changed:
+            self.on_scroll_page_changed(page_num)
+
     def get_selected_pages(self) -> List[int]:
         """Get list of selected pages
         
@@ -293,7 +342,9 @@ class ThumbnailPanel(tk.Frame):
 
 class PDFViewerWidget(tk.Frame):
     """Embedded PDF viewer widget"""
-    
+
+    PAGE_GAP = 14  # px gray divider between stacked pages in the scroll buffer
+
     def __init__(self, parent, document: Optional[Document] = None,
                  on_page_changed: Optional[Callable[[int], None]] = None,
                  on_after_render: Optional[Callable] = None, **kwargs):
@@ -316,10 +367,22 @@ class PDFViewerWidget(tk.Frame):
         self.current_page = 1
         self.zoom_level = 1.0
         self.zoom_mode = "fit_page"  # fit_page, fit_width, 100, custom
-        self.rendered_image = None
-        self.photo_image = None
-        self.render_offset_x = 0
-        self.render_offset_y = 0
+
+        # Continuous-scroll layout: every page's (x, y_top, w, h, zoom) is
+        # precomputed up front from document metadata alone (cheap -- no
+        # rendering), so the canvas scrollregion -- and therefore the
+        # scrollbar -- always represents the WHOLE document, not just
+        # whichever pages happen to be rendered right now. Only a window of
+        # pages near the viewport actually gets a rendered bitmap; that
+        # window slides (rendering newly-approached pages, evicting distant
+        # ones) as the user scrolls, so memory stays bounded on long PDFs.
+        self._full_layout: Dict[int, dict] = {}     # page_num -> {x, y_top, w, h, zoom}
+        self._page_order: List[int] = []            # page numbers in y_top order (== numeric order)
+        self._sorted_y_tops: List[float] = []        # parallel to _page_order, for bisect lookup
+        self._total_height = 0
+        self._content_width = 0
+        self._rendered_pages: Dict[int, dict] = {}   # page_num -> {'photo', 'img_id', 'div_id'}
+
         self.on_page_changed = on_page_changed
         self.on_after_render = on_after_render
         
@@ -362,7 +425,8 @@ class PDFViewerWidget(tk.Frame):
         # Thumbnail panel on left side
         self.thumbnail_panel = ThumbnailPanel(
             content_area,
-            on_page_selected=self._on_thumbnail_page_selected
+            on_page_selected=self._on_thumbnail_page_selected,
+            on_scroll_page_changed=self._on_thumbnail_scrolled
         )
         self.thumbnail_panel.pack(side=tk.LEFT, fill=tk.Y)
         
@@ -371,12 +435,21 @@ class PDFViewerWidget(tk.Frame):
         canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.canvas = tk.Canvas(canvas_frame, bg='gray')
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Scrollbar
-        scrollbar = tk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+
+        # Scrollbar must be packed before the canvas -- pack() hands out
+        # space in packing order, and the canvas's fill=BOTH/expand=True
+        # would otherwise claim the whole frame first, leaving the
+        # scrollbar zero width (same fix already applied in ThumbnailPanel).
+        #
+        # command=self._on_scrollbar_scroll rather than plain
+        # self.canvas.yview -- dragging the thumb (or clicking the track/
+        # arrows) must trigger the same render-window sync the wheel
+        # handler does, otherwise pages you scroll to directly via the
+        # scrollbar never get rendered (only wheel-driven scrolling did).
+        scrollbar = tk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self._on_scrollbar_scroll)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.canvas.config(yscrollcommand=scrollbar.set)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Bind mouse wheel to scroll
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
@@ -407,81 +480,207 @@ class PDFViewerWidget(tk.Frame):
             self.canvas.delete("all")
             self.canvas.create_text(300, 400, text="No PDF loaded", font=("Arial", 14))
             self.page_label.config(text="No pages")
+            self._full_layout = {}
+            self._page_order = []
+            self._sorted_y_tops = []
+            self._rendered_pages = {}
+            self._total_height = 0
+            self._content_width = 0
+            self.canvas.config(scrollregion=(0, 0, 0, 0))
             return
-        
-        # Render current page
-        self._render_and_display_page()
-        
-        # Update page label
-        self.page_label.config(text=f"Page {self.current_page} of {self.document.page_count}")
-    
-    def _render_and_display_page(self):
-        """Render current page and display on canvas"""
+
+        self._rebuild_layout_and_render(self.current_page)
+
+    def _update_page_label(self):
+        if self.document:
+            self.page_label.config(text=f"Page {self.current_page} of {self.document.page_count}")
+
+    def _page_pixel_size(self, page_num: int, zoom_factor: float) -> Tuple[int, int]:
+        """Estimate a page's rendered pixel size from its PDF-point
+        dimensions alone (no rendering), using the same
+        points * zoom * dpi/72 scale PDFRenderer uses -- so the estimate
+        matches the eventual bitmap almost exactly.
+        """
+        pages = self.document.metadata.get('pages', []) if self.document.metadata else []
+        if 1 <= page_num <= len(pages):
+            page_info = pages[page_num - 1]
+            width_pt, height_pt = page_info['width'], page_info['height']
+        else:
+            width_pt, height_pt = 612, 792  # Letter-size fallback
+        scale = zoom_factor * 150 / 72
+        return max(1, round(width_pt * scale)), max(1, round(height_pt * scale))
+
+    def _compute_full_layout(self):
+        """Precompute (x, y_top, w, h, zoom) for every page in the document
+        from metadata alone, and size the canvas scrollregion to the full
+        stacked height. This is what makes the scrollbar represent the
+        whole document -- like the page-thumbnail panel's -- rather than
+        just whatever window of pages is currently rendered.
+        """
+        self._full_layout = {}
+        self._page_order = []
+        self._sorted_y_tops = []
+
         if not self.document:
+            self._total_height = 0
+            self._content_width = 0
             return
-        
-        # Determine zoom
-        zoom_factor = self._calculate_zoom_factor()
-        
-        # Render page
-        img = PDFRenderer.render_page(
-            self.document.pdf_path,
-            self.current_page,
-            zoom=zoom_factor,
-            dpi=150
-        )
-        
-        if img is None:
-            # Fallback: show placeholder
-            img = PDFRenderer.create_placeholder_image(
-                text=f"Could not render page {self.current_page}\n(Install PyMuPDF for best results)"
-            )
-        
-        self.rendered_image = img
 
-        # Convert to PhotoImage and display
-        self.photo_image = PIL.ImageTk.PhotoImage(img)
-
-        # Center the page in the canvas when it's smaller than the visible
-        # viewport (e.g. Fit Page on a page whose aspect ratio doesn't match
-        # the canvas) instead of pinning it to the top-left corner, which
-        # otherwise dumps all the leftover space as a single dead-looking
-        # gray block on the right/bottom.
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
-        img_w, img_h = self.photo_image.width(), self.photo_image.height()
-        self.render_offset_x = max(0, (canvas_w - img_w) // 2) if canvas_w > 1 else 0
-        self.render_offset_y = max(0, (canvas_h - img_h) // 2) if canvas_h > 1 else 0
+        page_count = self.document.page_count
 
-        self.canvas.delete("all")
-        self.canvas.create_image(self.render_offset_x, self.render_offset_y,
-                                  image=self.photo_image, anchor=tk.NW)
+        y_cursor = 0
+        max_w = canvas_w
+        for page_num in range(1, page_count + 1):
+            zoom_factor = self._calculate_zoom_factor(page_num)
+            w_px, h_px = self._page_pixel_size(page_num, zoom_factor)
+            x = max(0, (canvas_w - w_px) // 2) if canvas_w > 1 else 0
 
-        # Update scroll region -- include the full viewport so the centering
-        # padding isn't clipped when the page is smaller than the canvas.
-        scroll_w = max(canvas_w, img_w + self.render_offset_x)
-        scroll_h = max(canvas_h, img_h + self.render_offset_y)
-        self.canvas.config(scrollregion=(0, 0, scroll_w, scroll_h))
+            self._full_layout[page_num] = {'x': x, 'y_top': y_cursor, 'w': w_px, 'h': h_px,
+                                            'zoom': zoom_factor}
+            self._page_order.append(page_num)
+            self._sorted_y_tops.append(y_cursor)
+            max_w = max(max_w, w_px)
+            y_cursor += h_px + self.PAGE_GAP
 
+        self._total_height = max(canvas_h, y_cursor - self.PAGE_GAP if page_count else canvas_h)
+        self._content_width = max_w
+        self.canvas.config(scrollregion=(0, 0, self._content_width, self._total_height))
+
+    def _page_at_pixel(self, y_px: float) -> Optional[int]:
+        """The page whose layout span contains (or immediately precedes)
+        the given absolute canvas y pixel. O(log n) via bisect since
+        _sorted_y_tops is built in increasing page-number/y_top order.
+        """
+        if not self._page_order:
+            return None
+        idx = bisect.bisect_right(self._sorted_y_tops, y_px) - 1
+        idx = max(0, min(idx, len(self._page_order) - 1))
+        return self._page_order[idx]
+
+    def _render_page_bitmap(self, page_num: int):
+        """Render and draw a single page's bitmap (plus its trailing
+        divider bar) at its already-known absolute position. No-op if
+        already rendered.
+        """
+        if page_num in self._rendered_pages or page_num not in self._full_layout:
+            return
+        layout = self._full_layout[page_num]
+
+        img = PDFRenderer.render_page(
+            self.document.pdf_path, page_num, zoom=layout['zoom'], dpi=150
+        )
+        if img is None:
+            img = PDFRenderer.create_placeholder_image(
+                text=f"Could not render page {page_num}\n(Install PyMuPDF for best results)"
+            )
+        photo = PIL.ImageTk.PhotoImage(img)
+        img_id = self.canvas.create_image(layout['x'], layout['y_top'],
+                                           image=photo, anchor=tk.NW)
+
+        # Divider bar in the gap below this page, so page boundaries stay
+        # visually clear while scrolling continuously through them (like
+        # Word's page view) -- skip after the last page (no gap follows it).
+        div_id = None
+        if page_num < self.document.page_count:
+            gap_top = layout['y_top'] + layout['h']
+            div_id = self.canvas.create_rectangle(
+                0, gap_top, self._content_width, gap_top + self.PAGE_GAP,
+                fill='#595959', width=0)
+
+        self._rendered_pages[page_num] = {'photo': photo, 'img_id': img_id, 'div_id': div_id}
+
+    def _evict_page_bitmap(self, page_num: int):
+        """Drop a rendered page's canvas items/bitmap once it's scrolled
+        far enough out of view, so memory stays bounded on long documents.
+        """
+        entry = self._rendered_pages.pop(page_num, None)
+        if not entry:
+            return
+        self.canvas.delete(entry['img_id'])
+        if entry['div_id'] is not None:
+            self.canvas.delete(entry['div_id'])
+
+    def _sync_render_window(self):
+        """Ensure pages within ~1 viewport-height of the visible area are
+        rendered, and evict pages more than ~2 viewport-heights away.
+        Layout positions are stable (precomputed), so this never needs to
+        touch scrollregion/yview -- only which bitmaps exist on screen.
+        """
+        if not self.document or not self._full_layout:
+            return
+
+        viewport_h = max(1, self.canvas.winfo_height())
+        view_top_frac, view_bottom_frac = self.canvas.yview()
+        view_top_px = view_top_frac * self._total_height
+        view_bottom_px = view_bottom_frac * self._total_height
+
+        render_lo = view_top_px - viewport_h
+        render_hi = view_bottom_px + viewport_h
+        evict_lo = view_top_px - 2 * viewport_h
+        evict_hi = view_bottom_px + 2 * viewport_h
+
+        for page_num, layout in self._full_layout.items():
+            p_top, p_bottom = layout['y_top'], layout['y_top'] + layout['h']
+            if p_bottom >= render_lo and p_top <= render_hi:
+                self._render_page_bitmap(page_num)
+
+        for page_num in list(self._rendered_pages.keys()):
+            layout = self._full_layout[page_num]
+            p_top, p_bottom = layout['y_top'], layout['y_top'] + layout['h']
+            if p_bottom < evict_lo or p_top > evict_hi:
+                self._evict_page_bitmap(page_num)
+
+    def _jump_to_page(self, page_num: int):
+        """Scroll so the top of page_num is at the top of the viewport
+        (explicit navigation/thumbnail click), then render whatever's now
+        visible.
+        """
+        layout = self._full_layout.get(page_num)
+        if not layout or not self._total_height:
+            return
+        frac = layout['y_top'] / self._total_height
+        self.canvas.yview_moveto(max(0.0, frac))
+        self._sync_render_window()
+        self._update_page_label()
         if self.on_after_render:
             self.on_after_render()
 
-    def get_render_offset(self) -> tuple:
-        """Current (x, y) pixel offset of the rendered page's top-left
-        corner within the canvas, from centering. Needed by anything that
-        overlays items on top of the page (e.g. image objects) to convert
-        between canvas pixels and PDF points correctly.
+    def _rebuild_layout_and_render(self, center_page: int):
+        """Full rebuild: recompute the whole-document layout (document
+        load, or zoom mode/level change -- anything that changes every
+        page's pixel size) and redraw the render window around
+        center_page.
         """
-        return (self.render_offset_x, self.render_offset_y)
+        self.canvas.delete("all")
+        self._rendered_pages = {}
+        self._compute_full_layout()
+        center_page = max(1, min(center_page, self.document.page_count))
+        self._jump_to_page(center_page)
+
+    def get_render_offset(self) -> tuple:
+        """Current (x, y) pixel offset of the current page's top-left
+        corner within the canvas. Needed by anything that overlays items
+        on top of the page (e.g. image objects) to convert between canvas
+        pixels and PDF points correctly.
+        """
+        layout = self._full_layout.get(self.current_page)
+        if not layout:
+            return (0, 0)
+        return (layout['x'], layout['y_top'])
 
     def get_page_to_screen_scale(self) -> float:
-        """Current pixels-per-PDF-point scale factor for the rendered page.
+        """Current pixels-per-PDF-point scale factor for the current page.
 
-        Combines the active zoom factor with the fixed 150 DPI render
-        resolution used by `_render_and_display_page`, so canvas pixel
-        coordinates can be converted to/from PDF points.
+        Combines that page's active zoom factor with the fixed 150 DPI
+        render resolution used when rendering page bitmaps, so canvas
+        pixel coordinates can be converted to/from PDF points.
         """
-        return self._calculate_zoom_factor() * 150 / 72
+        layout = self._full_layout.get(self.current_page)
+        if not layout:
+            return 0.0
+        return layout['zoom'] * 150 / 72
 
     def get_current_page_height_pt(self) -> Optional[float]:
         """Height of the currently displayed page, in PDF points."""
@@ -497,51 +696,56 @@ class PDFViewerWidget(tk.Frame):
         if self.on_page_changed:
             self.on_page_changed(self.current_page)
     
-    def _calculate_zoom_factor(self) -> float:
-        """Calculate zoom factor based on zoom mode"""
+    def _calculate_zoom_factor(self, page_num: Optional[int] = None) -> float:
+        """Calculate zoom factor based on zoom mode, for the given page
+        (defaults to the current page). Fit-page/fit-width depend on that
+        specific page's dimensions, which can differ page to page.
+        """
+        page_num = page_num if page_num is not None else self.current_page
+
         if self.zoom_mode == "100":
             return 1.0
         elif self.zoom_mode == "fit_page":
             # Calculate zoom to fit entire page in canvas
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
-            
+
             if canvas_width < 100 or canvas_height < 100:
                 return 1.0  # Canvas not yet initialized
-            
+
             # Get page dimensions
             if self.document and self.document.metadata:
                 pages = self.document.metadata.get('pages', [])
-                if self.current_page <= len(pages):
-                    page_info = pages[self.current_page - 1]
+                if 1 <= page_num <= len(pages):
+                    page_info = pages[page_num - 1]
                     page_width = page_info['width']
                     page_height = page_info['height']
-                    
+
                     # Convert points to pixels (at 150 DPI)
                     page_width_px = page_width * 150 / 72
                     page_height_px = page_height * 150 / 72
-                    
+
                     zoom_w = (canvas_width - 20) / page_width_px
                     zoom_h = (canvas_height - 20) / page_height_px
-                    
+
                     return min(zoom_w, zoom_h, 2.0)  # Cap at 2.0
-            
+
             return 1.0
         elif self.zoom_mode == "fit_width":
             # Calculate zoom to fit page width in canvas
             canvas_width = self.canvas.winfo_width()
             if canvas_width < 100:
                 return 1.0
-            
+
             if self.document and self.document.metadata:
                 pages = self.document.metadata.get('pages', [])
-                if self.current_page <= len(pages):
-                    page_info = pages[self.current_page - 1]
+                if 1 <= page_num <= len(pages):
+                    page_info = pages[page_num - 1]
                     page_width = page_info['width']
                     page_width_px = page_width * 150 / 72
-                    
+
                     return (canvas_width - 20) / page_width_px
-            
+
             return 1.0
         else:
             return self.zoom_level
@@ -551,7 +755,7 @@ class PDFViewerWidget(tk.Frame):
         if self.document and self.current_page < self.document.page_count:
             self.current_page += 1
             self.thumbnail_panel.set_current_page(self.current_page)
-            self._update_display()
+            self._jump_to_page(self.current_page)
             self._notify_page_changed()
 
     def prev_page(self):
@@ -559,7 +763,7 @@ class PDFViewerWidget(tk.Frame):
         if self.current_page > 1:
             self.current_page -= 1
             self.thumbnail_panel.set_current_page(self.current_page)
-            self._update_display()
+            self._jump_to_page(self.current_page)
             self._notify_page_changed()
 
     def goto_page(self, page_num: int):
@@ -571,70 +775,106 @@ class PDFViewerWidget(tk.Frame):
         if self.document and 1 <= page_num <= self.document.page_count:
             self.current_page = page_num
             self.thumbnail_panel.set_current_page(page_num)
-            self._update_display()
+            self._jump_to_page(page_num)
             self._notify_page_changed()
-    
+
     def zoom_in(self):
         """Zoom in"""
         self.zoom_mode = "custom"
         self.zoom_level = min(self.zoom_level * 1.2, 4.0)
         self.zoom_label.config(text=f"{int(self.zoom_level * 100)}%")
-        self._update_display()
-    
+        self._rebuild_layout_and_render(self.current_page)
+
     def zoom_out(self):
         """Zoom out"""
         self.zoom_mode = "custom"
         self.zoom_level = max(self.zoom_level / 1.2, 0.25)
         self.zoom_label.config(text=f"{int(self.zoom_level * 100)}%")
-        self._update_display()
-    
+        self._rebuild_layout_and_render(self.current_page)
+
     def fit_page(self):
         """Fit entire page in canvas"""
         self.zoom_mode = "fit_page"
         self.zoom_label.config(text="Fit")
-        self._update_display()
-    
+        self._rebuild_layout_and_render(self.current_page)
+
     def fit_width(self):
         """Fit page width to canvas"""
         self.zoom_mode = "fit_width"
         self.zoom_label.config(text="Width")
-        self._update_display()
-    
+        self._rebuild_layout_and_render(self.current_page)
+
     def zoom_100(self):
         """Zoom to 100%"""
         self.zoom_mode = "100"
         self.zoom_level = 1.0
         self.zoom_label.config(text="100%")
-        self._update_display()
-    
+        self._rebuild_layout_and_render(self.current_page)
+
     def _on_mousewheel(self, event):
-        """Handle mouse wheel scroll -- continuous-scroll mode: scrolling
-        past the bottom/top edge of the current page advances to the
-        next/previous page instead of stopping dead at the page boundary.
+        """Handle mouse wheel scroll -- glides continuously across page
+        boundaries since page layout is precomputed for the whole document
+        (see _compute_full_layout), instead of jumping straight from one
+        whole page to the next.
         """
         scrolling_down = event.num == 5 or event.delta < 0
-        top, bottom = self.canvas.yview()
-
-        if scrolling_down and bottom >= 0.999:
-            if self.document and self.current_page < self.document.page_count:
-                self.next_page()
-                self.canvas.yview_moveto(0)
-            return
-
-        if not scrolling_down and top <= 0.001:
-            if self.current_page > 1:
-                self.prev_page()
-                self.canvas.yview_moveto(1)
-            return
-
         self.canvas.yview_scroll(3 if scrolling_down else -3, "units")
-    
+        self._sync_render_window()
+        self._sync_current_page_from_scroll()
+
+    def _on_scrollbar_scroll(self, *args):
+        """Scrollbar command callback -- fires on thumb drag, track click,
+        and arrow clicks. Must do the same work as the wheel handler
+        (render the pages now in view, sync current_page/thumbnail
+        highlight) since this bypasses _on_mousewheel entirely.
+        """
+        self.canvas.yview(*args)
+        self._sync_render_window()
+        self._sync_current_page_from_scroll()
+
+    def _sync_current_page_from_scroll(self):
+        """After a wheel-driven scroll, figure out which page is now the
+        'current' one -- whichever page's vertical span holds the
+        viewport's vertical midpoint -- and update dependent UI (page
+        label, thumbnail highlight, overlay/footer position) if it changed.
+        """
+        if not self.document or not self._page_order or not self._total_height:
+            return
+
+        viewport_h = self.canvas.winfo_height()
+        view_top_px = self.canvas.yview()[0] * self._total_height
+        view_mid_px = view_top_px + viewport_h / 2
+
+        new_current = self._page_at_pixel(view_mid_px) or self.current_page
+
+        if new_current != self.current_page:
+            self.current_page = new_current
+            self.thumbnail_panel.set_current_page(new_current)
+            self._update_page_label()
+            self._notify_page_changed()
+            if self.on_after_render:
+                self.on_after_render()
+
     def _on_thumbnail_page_selected(self, page_num: int):
         """Callback when a page is selected via thumbnail
-        
+
         Args:
             page_num: Selected page number (1-indexed)
         """
         self.current_page = page_num
-        self._update_display()
+        self._jump_to_page(page_num)
+        self._notify_page_changed()
+
+    def _on_thumbnail_scrolled(self, page_num: int):
+        """Callback when the user scrolls the thumbnail list (not a click)
+        -- keep the main view following along, the same way scrolling the
+        main view keeps the thumbnail list following (see
+        _sync_current_page_from_scroll). Does NOT call
+        thumbnail_panel.set_current_page(), which would fight the scroll
+        position the user is actively setting there.
+        """
+        if not self.document or not (1 <= page_num <= self.document.page_count):
+            return
+        self.current_page = page_num
+        self._jump_to_page(page_num)
         self._notify_page_changed()

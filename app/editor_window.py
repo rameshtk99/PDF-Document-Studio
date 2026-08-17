@@ -86,6 +86,12 @@ class PDFEditorApp:
         edit_menu = tk.Menu(menubar, tearoff=0)
         edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
         edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Copy Image(s)",  command=self._copy_images,  accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste Image(s)", command=self._paste_images, accelerator="Ctrl+V")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Group Images",   command=self._group_images,   accelerator="Ctrl+G")
+        edit_menu.add_command(label="Ungroup Images", command=self._ungroup_images, accelerator="Ctrl+Shift+G")
         menubar.add_cascade(label="Edit", menu=edit_menu)
 
         insert_menu = tk.Menu(menubar, tearoff=0)
@@ -190,6 +196,9 @@ class PDFEditorApp:
         self.root.bind_all('<Control-s>', lambda e: self.save_project())
         self.root.bind_all('<Control-e>', lambda e: self.export_pdf())
         self.root.bind_all('<Delete>', self._delete_selected_image)
+        # Image-specific shortcuts fire only when no text field has focus
+        self.root.bind_all('<Control-g>', lambda e: self._group_images_if_canvas(e))
+        self.root.bind_all('<Control-G>', lambda e: self._ungroup_images_if_canvas(e))
 
     # ---- document lifecycle ---------------------------------------------
 
@@ -431,6 +440,36 @@ class PDFEditorApp:
             return
         if self.image_overlay.selected_id:
             self.image_properties._delete()
+
+    def _copy_images(self, event=None):
+        focused = self.root.focus_get()
+        if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
+            return
+        self.image_overlay._on_copy()
+
+    def _paste_images(self, event=None):
+        focused = self.root.focus_get()
+        if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
+            return
+        self.image_overlay._on_paste()
+
+    def _group_images(self):
+        self.image_overlay._on_group()
+
+    def _ungroup_images(self):
+        self.image_overlay._on_ungroup()
+
+    def _group_images_if_canvas(self, event=None):
+        focused = self.root.focus_get()
+        if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
+            return
+        self.image_overlay._on_group()
+
+    def _ungroup_images_if_canvas(self, event=None):
+        focused = self.root.focus_get()
+        if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
+            return
+        self.image_overlay._on_ungroup()
 
     # ---- callbacks ----------------------------------------------------------
 

@@ -12,6 +12,7 @@ Manages:
 
 from dataclasses import dataclass
 import os
+import uuid
 from typing import Optional, List, Dict, Tuple
 from PIL import Image
 from models.models import Document, PageObject
@@ -402,3 +403,49 @@ class ImageManager:
     def clear_cache(self):
         """Clear image cache"""
         self._image_cache.clear()
+
+    # ---- group management -------------------------------------------------
+
+    def group_images(self, image_ids: List[str]) -> str:
+        """Assign a shared group_id to a set of images. Returns the new group_id."""
+        group_id = str(uuid.uuid4())
+        for image_id in image_ids:
+            obj = self.get_image_object(image_id)
+            if obj:
+                obj.group_id = group_id
+        return group_id
+
+    def ungroup_images(self, image_ids: List[str]):
+        """Clear group membership from a set of images."""
+        for image_id in image_ids:
+            obj = self.get_image_object(image_id)
+            if obj:
+                obj.group_id = None
+
+    def get_group_id(self, image_id: str) -> Optional[str]:
+        obj = self.get_image_object(image_id)
+        return obj.group_id if obj else None
+
+    def get_group_member_ids(self, group_id: str) -> List[str]:
+        """Return all image IDs whose group_id matches (all pages)."""
+        if not self.document or not group_id:
+            return []
+        result = []
+        for page_num in range(1, self.document.page_count + 1):
+            config = self.document.get_page_config(page_num)
+            for obj in config.objects:
+                if obj.type == 'image' and obj.group_id == group_id:
+                    result.append(obj.id)
+        return result
+
+    def get_group_bounds(self, image_ids: List[str]) -> Optional[Tuple[float, float, float, float]]:
+        """Return (x, y, width, height) bounding box (PDF coords) for a list of image IDs."""
+        objs = [self.get_image_object(i) for i in image_ids]
+        objs = [o for o in objs if o]
+        if not objs:
+            return None
+        min_x = min(o.x for o in objs)
+        min_y = min(o.y for o in objs)
+        max_x = max(o.x + o.width for o in objs)
+        max_y = max(o.y + o.height for o in objs)
+        return (min_x, min_y, max_x - min_x, max_y - min_y)
