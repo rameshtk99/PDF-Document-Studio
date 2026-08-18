@@ -8,3 +8,4 @@ echo "Installing Python packages..."
 pip3 install -r requirements.txt
 
 echo "Setup complete! You can now run: python3 main.py"
+powershell -ExecutionPolicy Bypass -File .\build_installer.ps1

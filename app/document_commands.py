@@ -163,6 +163,73 @@ class DeleteObjectCommand(Command):
         self.execute()
 
 
+class DeleteManyCommand(Command):
+    """Delete multiple image objects as a single undoable step, keeping a
+    full snapshot of each (including group/lock/visibility) so undo
+    restores them exactly."""
+
+    def __init__(self, manager: ImageManager, page_number: int, objs: List):
+        super().__init__()
+        self.manager = manager
+        self.page_number = page_number
+        self._entries: List[Dict] = []
+        for obj in objs:
+            placement = ImagePlacement(
+                page_number=page_number, x=obj.x, y=obj.y,
+                width=obj.width, height=obj.height,
+                rotation=obj.rotation, opacity=obj.opacity, z_index=obj.z_index,
+            )
+            self._entries.append({
+                'image_id': obj.id,
+                'placement': placement,
+                'image_path': (obj.properties or {}).get('image_path'),
+                'group_id': obj.group_id,
+                'locked': obj.locked,
+                'visible': obj.visible,
+            })
+        self.description = f"Delete {len(self._entries)} object(s)"
+
+    def execute(self):
+        for entry in self._entries:
+            self.manager.remove_image(entry['image_id'])
+
+    def undo(self):
+        for entry in self._entries:
+            new_id = self.manager.add_image_to_page(
+                self.page_number, entry['placement'], entry['image_path'])
+            entry['image_id'] = new_id
+            obj = self.manager.get_image_object(new_id)
+            if obj:
+                obj.group_id = entry['group_id']
+                obj.locked = entry['locked']
+                obj.visible = entry['visible']
+
+    def redo(self):
+        self.execute()
+
+
+class ChangeZIndexManyCommand(Command):
+    """Batch z_index change for Bring to Front / Send to Back on a
+    multi-object selection; changes is {image_id: (from_z, to_z)}."""
+
+    def __init__(self, manager: ImageManager, changes: Dict[str, Tuple[int, int]]):
+        super().__init__()
+        self.manager = manager
+        self.changes = changes
+        self.description = f"Reorder {len(changes)} object(s)"
+
+    def execute(self):
+        for image_id, (_, to_z) in self.changes.items():
+            self.manager.set_image_property(image_id, 'z_index', to_z)
+
+    def undo(self):
+        for image_id, (from_z, _) in self.changes.items():
+            self.manager.set_image_property(image_id, 'z_index', from_z)
+
+    def redo(self):
+        self.execute()
+
+
 class GroupCommand(Command):
     """Set or clear group_id on a set of images (Group / Ungroup)."""
 

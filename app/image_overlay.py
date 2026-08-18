@@ -6,28 +6,40 @@ y increasing upward.  Canvas pixels have origin top-left, y increasing
 downward.  All conversion between the two is done by `_pdf_to_canvas` /
 `_canvas_to_pdf` using the page height and the viewer's current render scale.
 
+All rotation / bounding-box math (selection box shape, resize-handle
+positions, resize-along-local-axes) is delegated to utils.geometry, the
+same module pdf/pdf_handler.py uses to rasterize the export/print image --
+so the editor's rotated selection box, the live preview, and the exported
+PDF always agree on exactly where an object's corners are.
+
 Interaction modes
 -----------------
 MOVE       -- drag any selected object; all selected objects move together
 RESIZE     -- drag a corner/edge handle; all selected objects scale from
-              the anchor corner.  Hold Shift → aspect ratio locked.
+              the anchor corner, along the selection's own (possibly
+              rotated) local axes.  Hold Shift -> aspect ratio locked.
 ROTATE     -- drag the rotation handle (circle above selection box);
               all selected objects orbit the group center and spin by
               the same delta.  Completely free (any angle, no snapping).
+DUPLICATE  -- Ctrl+Shift+drag a selected object: creates a copy (undoable)
+              and drags the copy; the original never moves.
 
 Selection
 ---------
-Click               → select single object (auto-expands to whole group)
-Ctrl+Click          → add/remove object from selection (whole group added)
-Click empty space   → deselect all
+Click               -> select single object (auto-expands to whole group)
+Ctrl+Click          -> add/remove object from selection (whole group added)
+Ctrl+Shift+drag     -> duplicate selection and drag the duplicate
+Right-click         -> context menu (Copy/Paste/Group/Ungroup/Delete/
+                       Bring to Front/Send to Back)
+Click empty space   -> deselect all
 
-Keyboard
+Keyboard (bound globally in editor_window.py so focus never matters)
 --------
-Ctrl+G          → group selected images
-Ctrl+Shift+G    → ungroup selected images
-Ctrl+C          → copy selected images to clipboard
-Ctrl+V          → paste clipboard to current page (offset +15pt)
-Delete          → handled by editor_window; no change needed here
+Ctrl+G          -> group selected images
+Ctrl+Shift+G    -> ungroup selected images
+Ctrl+C          -> copy selected images to clipboard
+Ctrl+V          -> paste clipboard to current page (offset +15pt)
+Delete          -> handled by editor_window; no change needed here
 """
 
 import math
@@ -41,29 +53,18 @@ from app.image_editor import ImageEditor, SelectionBox
 from app.undo_redo import UndoRedoManager
 from app.document_commands import (
     MoveObjectCommand, ResizeObjectCommand, ChangeObjectPropertyCommand,
-    AddObjectCommand, DeleteObjectCommand,
+    AddObjectCommand, DeleteObjectCommand, DeleteManyCommand,
     GroupCommand, MoveManyCommand, TransformManyCommand,
-    RotateManyCommand, PasteObjectsCommand,
+    RotateManyCommand, PasteObjectsCommand, ChangeZIndexManyCommand,
 )
 from pdf.image_manager import ImageManager, ImagePlacement
+from utils import geometry as geo
 
 HANDLE_SIZE = 8          # half-size of a resize handle in pixels
 ROT_HANDLE_OFFSET = 28   # pixels above selection box top-center
 ROT_HANDLE_RADIUS = 7    # pixel radius of the rotation handle circle
 MIN_OBJ_SIZE = 5.0       # minimum PDF-point dimension after resize
 PASTE_OFFSET = 15.0      # PDF-point offset for pasted copies
-
-
-def _group_bounds(objs) -> Optional[Tuple[float, float, float, float]]:
-    """Union bounding box of a list of PageObjects. Returns (x, y, w, h) PDF."""
-    objs = [o for o in objs if o]
-    if not objs:
-        return None
-    min_x = min(o.x for o in objs)
-    min_y = min(o.y for o in objs)
-    max_x = max(o.x + o.width for o in objs)
-    max_y = max(o.y + o.height for o in objs)
-    return (min_x, min_y, max_x - min_x, max_y - min_y)
 
 
 def _snapshot_obj(obj) -> dict:
@@ -104,21 +105,39 @@ class ImageOverlayController:
         self._drag_start_pdf: Tuple[float, float] = (0.0, 0.0)
         self._resize_handle: Optional[str] = None
         self._initial_states: Dict[str, dict] = {}   # id -> snapshot at drag start
-        self._initial_bounds: Optional[Tuple] = None  # (x,y,w,h) at drag start
+
+        # Set only for the duration of a Ctrl+Shift+drag: the PasteObjectsCommand
+        # that created the duplicate(s) already sitting on the undo stack. Letting
+        # _commit_move() patch that same command's snapshot positions (instead of
+        # pushing a second MoveObjectCommand/MoveManyCommand) keeps "duplicate and
+        # drag" a single undo step, matching the rest of the app's one-gesture ==
+        # one-undo-step convention.
+        self._duplicate_drag_cmd: Optional[PasteObjectsCommand] = None
+
+        # Resize/rotate operate in the selection's own (possibly rotated)
+        # local frame -- these are captured at drag-start by
+        # _selection_geometry() so every intermediate frame reuses them.
+        self._resize_angle: float = 0.0
+        self._resize_local_bbox0: Optional[Tuple[float, float, float, float]] = None
+        self._resize_local_start: Tuple[float, float] = (0.0, 0.0)
         self._rotate_center_canvas: Tuple[float, float] = (0.0, 0.0)
         self._rotate_start_angle: float = 0.0        # canvas angle at drag start
 
-        # Cached rotation handle position in canvas coords (set during redraw)
+        # Cached canvas-space handle positions, refreshed every redraw() so
+        # hit-testing always matches what's actually on screen.
         self._rot_handle_canvas: Optional[Tuple[float, float]] = None
+        self._handle_canvas_positions: Dict[str, Tuple[float, float]] = {}
 
         canvas = self.pdf_viewer.canvas
         canvas.bind("<Button-1>",        self._on_press,   add="+")
         canvas.bind("<B1-Motion>",       self._on_motion,  add="+")
         canvas.bind("<ButtonRelease-1>", self._on_release, add="+")
-        canvas.bind("<Control-c>",       self._on_copy)
-        canvas.bind("<Control-v>",       self._on_paste)
-        canvas.bind("<Control-g>",       self._on_group)
-        canvas.bind("<Control-G>",       self._on_ungroup)
+        canvas.bind("<Button-3>",        self._on_right_click, add="+")
+        # Ctrl+C / Ctrl+V / Ctrl+G / Ctrl+Shift+G are bound once, globally,
+        # in editor_window.py's _bind_shortcuts -- binding them again here
+        # on the canvas would fire them twice (root's bind_all tag is
+        # checked in addition to the focused widget's own bindings) and
+        # was the root cause of copy/paste feeling unreliable/duplicated.
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -147,6 +166,7 @@ class ImageOverlayController:
         canvas.delete("obj_overlay")
         self._photo_refs.clear()
         self._rot_handle_canvas = None
+        self._handle_canvas_positions = {}
 
         if not self.pdf_viewer.document:
             return
@@ -161,64 +181,89 @@ class ImageOverlayController:
                 self._draw_object(canvas, obj, scale, page_h)
 
         if self.selected_ids:
-            objs = [self.manager.get_image_object(i) for i in self.selected_ids]
-            bounds = _group_bounds(objs)
-            if bounds:
-                self._draw_selection(canvas, bounds, scale, page_h)
+            self._draw_selection(canvas, scale, page_h)
 
     def _draw_object(self, canvas, obj, scale, page_h):
-        left, top    = self._pdf_to_canvas(obj.x,              obj.y + obj.height, scale, page_h)
-        right, bottom = self._pdf_to_canvas(obj.x + obj.width, obj.y,              scale, page_h)
-        w_px = max(1, int(round(right - left)))
-        h_px = max(1, int(round(bottom - top)))
+        corners_world = geo.object_corners_world(obj.x, obj.y, obj.width, obj.height, obj.rotation)
+        corners_canvas = [self._pdf_to_canvas(x, y, scale, page_h) for (x, y) in corners_world]
+        tl_c = corners_canvas[3]
 
-        photo = self._build_thumbnail(obj, w_px, h_px)
+        photo = self._build_thumbnail(obj, scale)
         if photo:
-            canvas.create_image(left, top, anchor=tk.NW, image=photo, tags="obj_overlay")
+            cx_world, cy_world = geo.object_center(obj.x, obj.y, obj.width, obj.height)
+            ccx, ccy = self._pdf_to_canvas(cx_world, cy_world, scale, page_h)
+            canvas.create_image(ccx, ccy, anchor=tk.CENTER, image=photo, tags="obj_overlay")
             self._photo_refs[obj.id] = photo
         else:
-            canvas.create_rectangle(left, top, right, bottom,
-                                     outline='gray', dash=(3, 2), tags="obj_overlay")
+            flat = [c for pt in corners_canvas for c in pt]
+            canvas.create_polygon(*flat, outline='gray', dash=(3, 2), fill='',
+                                   tags="obj_overlay")
         if obj.locked:
-            canvas.create_text(left + 4, top + 4, anchor=tk.NW, text="🔒",
+            canvas.create_text(tl_c[0] + 4, tl_c[1] + 4, anchor=tk.NW, text="\U0001F512",
                                 font=('Arial', 8), tags="obj_overlay")
 
         # Per-object selection highlight (thin dotted border when part of multi-select)
         if obj.id in self.selected_ids and len(self.selected_ids) > 1:
-            canvas.create_rectangle(left, top, right, bottom,
-                                     outline='#60B0FF', width=1, dash=(2, 2),
-                                     tags="obj_overlay")
+            flat = [c for pt in corners_canvas for c in pt]
+            canvas.create_polygon(*flat, outline='#60B0FF', width=1, dash=(2, 2), fill='',
+                                   tags="obj_overlay")
 
-    def _draw_selection(self, canvas, bounds, scale, page_h):
-        """Draw the unified selection box, resize handles, and rotation handle."""
-        bx, by, bw, bh = bounds
-        left,  top    = self._pdf_to_canvas(bx,      by + bh, scale, page_h)
-        right, bottom = self._pdf_to_canvas(bx + bw, by,      scale, page_h)
+    def _selected_objs_tuples(self) -> List[Tuple[float, float, float, float, float]]:
+        objs = []
+        for image_id in self.selected_ids:
+            obj = self.manager.get_image_object(image_id)
+            if obj:
+                objs.append((obj.x, obj.y, obj.width, obj.height, obj.rotation))
+        return objs
 
-        # Selection rectangle
-        canvas.create_rectangle(left, top, right, bottom,
-                                 outline='#0080FF', width=2, dash=(4, 2),
-                                 tags="obj_overlay")
+    def _selection_geometry(self):
+        """(angle, local_bbox, corners_world, handle_world) for the current
+        selection, or None if nothing is selected. `angle` is the selection's
+        shared rotation (0.0 if the selected objects don't all share one)."""
+        objs = self._selected_objs_tuples()
+        if not objs:
+            return None
+        angle, local_bbox, corners_world = geo.group_frame(objs)
+        bl, br, tr, tl = corners_world
+        mid = lambda a, b: ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        handle_world = {
+            'TL': tl, 'T': mid(tl, tr), 'TR': tr,
+            'R': mid(tr, br), 'BR': br,
+            'B': mid(bl, br), 'BL': bl, 'L': mid(tl, bl),
+        }
+        return angle, local_bbox, corners_world, handle_world
 
-        # Resize handles
-        cx = (left + right) / 2
-        cy = (top + bottom) / 2
-        for hx, hy in [
-            (left, top), (cx, top), (right, top),
-            (right, cy),
-            (right, bottom), (cx, bottom), (left, bottom),
-            (left, cy),
-        ]:
+    def _draw_selection(self, canvas, scale, page_h):
+        """Draw the (possibly rotated) selection box, resize handles, and
+        rotation handle -- a true rotated polygon, not always axis-aligned."""
+        geom = self._selection_geometry()
+        if not geom:
+            return
+        angle, _local_bbox, corners_world, handle_world = geom
+
+        corners_canvas = [self._pdf_to_canvas(x, y, scale, page_h) for (x, y) in corners_world]
+        flat = [c for pt in corners_canvas for c in pt]
+        canvas.create_polygon(*flat, outline='#0080FF', width=2, dash=(4, 2), fill='',
+                               tags="obj_overlay")
+
+        handle_canvas = {name: self._pdf_to_canvas(x, y, scale, page_h)
+                          for name, (x, y) in handle_world.items()}
+        self._handle_canvas_positions = handle_canvas
+        for hx, hy in handle_canvas.values():
             s = HANDLE_SIZE / 2
             canvas.create_rectangle(hx - s, hy - s, hx + s, hy + s,
                                      fill='white', outline='#0080FF', width=2,
                                      tags="obj_overlay")
 
-        # Rotation handle: circle above top-center, connected by a line
-        rcx = cx
-        rcy = top - ROT_HANDLE_OFFSET
-        canvas.create_line(cx, top, rcx, rcy + ROT_HANDLE_RADIUS,
-                            fill='#0080FF', width=1, tags="obj_overlay")
+        # Rotation handle: offset from top-center, along the box's own
+        # (rotated) "up" direction so it visually rotates with the box.
+        tl_c, bl_c, t_c = handle_canvas['TL'], handle_canvas['BL'], handle_canvas['T']
+        up_x, up_y = tl_c[0] - bl_c[0], tl_c[1] - bl_c[1]
+        up_len = math.hypot(up_x, up_y) or 1.0
+        up_x, up_y = up_x / up_len, up_y / up_len
+        rcx = t_c[0] + up_x * ROT_HANDLE_OFFSET
+        rcy = t_c[1] + up_y * ROT_HANDLE_OFFSET
+        canvas.create_line(t_c[0], t_c[1], rcx, rcy, fill='#0080FF', width=1, tags="obj_overlay")
         canvas.create_oval(rcx - ROT_HANDLE_RADIUS, rcy - ROT_HANDLE_RADIUS,
                             rcx + ROT_HANDLE_RADIUS, rcy + ROT_HANDLE_RADIUS,
                             fill='white', outline='#0080FF', width=2,
@@ -226,24 +271,28 @@ class ImageOverlayController:
         self._rot_handle_canvas = (rcx, rcy)
 
     @staticmethod
-    def _build_thumbnail(obj, w_px, h_px):
+    def _build_thumbnail(obj, scale):
+        """Build the on-canvas preview bitmap for `obj`.
+
+        Resizes the source image to its true LOCAL (un-rotated) pixel size
+        first, then -- only if rotated -- rotates with expand=True, which
+        enlarges the canvas to fit the full rotated image losslessly.
+        There is deliberately no "fit the rotated result back into the
+        original box" step: that shrink-to-fit was the bug. The caller
+        places the returned bitmap centered on the object's center, so its
+        (now larger) rotated footprint is what actually appears on screen,
+        matching pdf/pdf_handler.py's export rendering exactly.
+        """
         path = (obj.properties or {}).get('image_path')
-        if not path or not os.path.exists(path) or w_px <= 0 or h_px <= 0:
+        if not path or not os.path.exists(path):
             return None
+        w_px = max(1, int(round(obj.width * scale)))
+        h_px = max(1, int(round(obj.height * scale)))
         try:
             img = Image.open(path).convert('RGBA')
+            img = img.resize((w_px, h_px), Image.Resampling.LANCZOS)
             if obj.rotation:
-                # expand=True gives the full rotated image without clipping any corners.
-                # Then fit within (w_px, h_px) preserving aspect ratio and center it.
                 img = img.rotate(-obj.rotation, expand=True, resample=Image.BICUBIC)
-                img.thumbnail((w_px, h_px), Image.Resampling.LANCZOS)
-                canvas_img = Image.new('RGBA', (w_px, h_px), (0, 0, 0, 0))
-                px = (w_px - img.width) // 2
-                py = (h_px - img.height) // 2
-                canvas_img.paste(img, (px, py), img)
-                img = canvas_img
-            else:
-                img = img.resize((w_px, h_px), Image.Resampling.LANCZOS)
             opacity = max(0.0, min(100.0, obj.opacity))
             if opacity < 100.0:
                 alpha = img.split()[3].point(lambda p: int(p * opacity / 100.0))
@@ -270,27 +319,9 @@ class ImageOverlayController:
 
     def _hit_resize_handle(self, cx, cy) -> Optional[str]:
         """Return resize handle name ('TL','T','TR','R','BR','B','BL','L') or None."""
-        if not self.selected_ids:
+        if not self.selected_ids or not self._handle_canvas_positions:
             return None
-        scale = self.pdf_viewer.get_page_to_screen_scale()
-        page_h = self.pdf_viewer.get_current_page_height_pt()
-        if not scale or not page_h:
-            return None
-        objs = [self.manager.get_image_object(i) for i in self.selected_ids]
-        bounds = _group_bounds(objs)
-        if not bounds:
-            return None
-        bx, by, bw, bh = bounds
-        left,  top    = self._pdf_to_canvas(bx,      by + bh, scale, page_h)
-        right, bottom = self._pdf_to_canvas(bx + bw, by,      scale, page_h)
-        mcx = (left + right) / 2
-        mcy = (top + bottom) / 2
-        handle_positions = {
-            'TL': (left,  top),    'T':  (mcx, top),  'TR': (right, top),
-            'R':  (right, mcy),    'BR': (right, bottom),
-            'B':  (mcx, bottom),   'BL': (left, bottom), 'L': (left, mcy),
-        }
-        for name, (hx, hy) in handle_positions.items():
+        for name, (hx, hy) in self._handle_canvas_positions.items():
             if abs(cx - hx) <= HANDLE_SIZE and abs(cy - hy) <= HANDLE_SIZE:
                 return name
         return None
@@ -300,6 +331,12 @@ class ImageOverlayController:
             return False
         rcx, rcy = self._rot_handle_canvas
         return math.hypot(cx - rcx, cy - rcy) <= ROT_HANDLE_RADIUS + 4
+
+    def _hit_object(self, px, py) -> Optional[str]:
+        page_num = self.pdf_viewer.current_page
+        images = self.manager.get_page_images(page_num)
+        ids = [o.id for o in images if o.visible and not o.locked]
+        return self.editor.get_hit_target(px, py, ids, self.manager)
 
     def _expand_group(self, image_ids: List[str]) -> List[str]:
         """If any id belongs to a group, expand to all members of that group."""
@@ -320,6 +357,13 @@ class ImageOverlayController:
         cx = canvas.canvasx(event.x)
         cy = canvas.canvasy(event.y)
         ctrl = bool(event.state & 0x0004)
+        shift = bool(event.state & 0x0001)
+
+        # Any earlier Ctrl+Shift+drag is fully resolved by the time a new
+        # press starts (either consumed by _commit_move or never fired) --
+        # reset defensively so a stray value never leaks into an unrelated
+        # plain move.
+        self._duplicate_drag_cmd = None
 
         # Rotation handle takes priority when something is selected
         if self.selected_ids and self._hit_rotation_handle(cx, cy):
@@ -334,13 +378,19 @@ class ImageOverlayController:
                 return
 
         # Hit test images on current page
-        page_num = self.pdf_viewer.current_page
-        images = self.manager.get_page_images(page_num)
-        ids = [o.id for o in images if o.visible and not o.locked]
         px, py = self._canvas_to_pdf(cx, cy)
-        hit_id = self.editor.get_hit_target(px, py, ids, self.manager)
+        hit_id = self._hit_object(px, py)
 
         if hit_id:
+            if ctrl and shift:
+                # Ctrl+Shift+drag: duplicate the (auto-expanded) selection
+                # and drag the duplicate; the original never moves.
+                target_ids = self._expand_group([hit_id])
+                if not (set(target_ids) & set(self.selected_ids)):
+                    self._select(target_ids)
+                self._begin_duplicate_drag(cx, cy)
+                return
+
             if ctrl:
                 # Toggle group membership in selection
                 group_ids = self._expand_group([hit_id])
@@ -393,8 +443,56 @@ class ImageOverlayController:
 
         self._mode = 'idle'
         self._initial_states.clear()
-        self._initial_bounds = None
+        self._resize_local_bbox0 = None
         self.redraw()
+
+    def _on_right_click(self, event):
+        if not self.pdf_viewer.document:
+            self._show_context_menu(event)
+            return
+        canvas = self.pdf_viewer.canvas
+        cx = canvas.canvasx(event.x)
+        cy = canvas.canvasy(event.y)
+        px, py = self._canvas_to_pdf(cx, cy)
+        hit_id = self._hit_object(px, py)
+
+        if hit_id and hit_id not in self.selected_ids:
+            self._select(self._expand_group([hit_id]))
+        elif not hit_id and not self.selected_ids:
+            # Truly empty canvas, nothing selected -- leave selection as-is
+            # (empty) so the menu just offers Paste.
+            pass
+
+        self._show_context_menu(event)
+
+    def _show_context_menu(self, event):
+        has_sel = bool(self.selected_ids)
+        has_clip = bool(self._clipboard)
+        can_group = len(self.selected_ids) >= 2
+        can_ungroup = any(self.manager.get_group_id(i) for i in self.selected_ids)
+
+        menu = tk.Menu(self.pdf_viewer.canvas, tearoff=0)
+        menu.add_command(label="Copy", command=self._on_copy,
+                          state=tk.NORMAL if has_sel else tk.DISABLED)
+        menu.add_command(label="Paste", command=self._on_paste,
+                          state=tk.NORMAL if has_clip else tk.DISABLED)
+        menu.add_separator()
+        menu.add_command(label="Group", command=self._on_group,
+                          state=tk.NORMAL if can_group else tk.DISABLED)
+        menu.add_command(label="Ungroup", command=self._on_ungroup,
+                          state=tk.NORMAL if can_ungroup else tk.DISABLED)
+        menu.add_separator()
+        menu.add_command(label="Bring to Front", command=self._bring_selection_to_front,
+                          state=tk.NORMAL if has_sel else tk.DISABLED)
+        menu.add_command(label="Send to Back", command=self._send_selection_to_back,
+                          state=tk.NORMAL if has_sel else tk.DISABLED)
+        menu.add_separator()
+        menu.add_command(label="Delete", command=self.delete_selection,
+                          state=tk.NORMAL if has_sel else tk.DISABLED)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     # ------------------------------------------------------------------ begin operations
 
@@ -412,30 +510,58 @@ class ImageOverlayController:
         self._drag_start_pdf = self._canvas_to_pdf(cx, cy)
         self._initial_states = self._snapshot_selected()
 
+    def _begin_duplicate_drag(self, cx, cy):
+        """Create an undoable duplicate of the current selection (retaining
+        position/size/rotation/opacity/image/group), select the duplicate,
+        and start moving it -- the originals are never touched."""
+        if not self.selected_ids or not self.pdf_viewer.document:
+            return
+        page_num = self.pdf_viewer.current_page
+        snapshots = []
+        for image_id in self.selected_ids:
+            obj = self.manager.get_image_object(image_id)
+            if obj:
+                snapshots.append(_snapshot_obj(obj))
+        if not snapshots:
+            return
+        cmd = PasteObjectsCommand(self.manager, page_num, snapshots)
+        self.undo_manager.execute(cmd)
+        if not cmd.added_ids:
+            return
+        self._select(cmd.added_ids)
+        self._begin_move(cx, cy)
+        self._duplicate_drag_cmd = cmd
+
     def _begin_resize(self, cx, cy, handle_type: str):
         self._mode = 'resize'
         self._resize_handle = handle_type
         self._drag_start_canvas = (cx, cy)
         self._drag_start_pdf = self._canvas_to_pdf(cx, cy)
         self._initial_states = self._snapshot_selected()
-        objs = [self.manager.get_image_object(i) for i in self.selected_ids]
-        self._initial_bounds = _group_bounds(objs)
+
+        geom = self._selection_geometry()
+        angle = geom[0] if geom else 0.0
+        local_bbox = geom[1] if geom else None
+        self._resize_angle = angle
+        self._resize_local_bbox0 = local_bbox
+        self._resize_local_start = geo.world_to_frame(
+            self._drag_start_pdf[0], self._drag_start_pdf[1], angle)
 
     def _begin_rotate(self, cx, cy):
         self._mode = 'rotate'
         self._drag_start_canvas = (cx, cy)
         self._initial_states = self._snapshot_selected()
 
-        # Group center in canvas coords
         scale = self.pdf_viewer.get_page_to_screen_scale()
         page_h = self.pdf_viewer.get_current_page_height_pt()
-        objs = [self.manager.get_image_object(i) for i in self.selected_ids]
-        bounds = _group_bounds(objs)
-        if bounds:
-            bx, by, bw, bh = bounds
-            gcx_pdf = bx + bw / 2
-            gcy_pdf = by + bh / 2
-            self._rotate_center_canvas = self._pdf_to_canvas(gcx_pdf, gcy_pdf, scale, page_h)
+        geom = self._selection_geometry()
+        if geom and scale and page_h:
+            angle, local_bbox, _corners, _handles = geom
+            lx0, ly0, lx1, ly1 = local_bbox
+            lcx, lcy = (lx0 + lx1) / 2.0, (ly0 + ly1) / 2.0
+            pivot_world = geo.frame_to_world(lcx, lcy, angle)
+            self._rotate_center_canvas = self._pdf_to_canvas(
+                pivot_world[0], pivot_world[1], scale, page_h)
         else:
             self._rotate_center_canvas = (cx, cy)
 
@@ -452,92 +578,37 @@ class ImageOverlayController:
         if not scale:
             return
         dx_pdf = dx_canvas / scale
-        dy_pdf = -dy_canvas / scale   # canvas y down → PDF y up
+        dy_pdf = -dy_canvas / scale   # canvas y down -> PDF y up
         for image_id, snap in self._initial_states.items():
             self.manager.set_image_position(
                 image_id, snap['x'] + dx_pdf, snap['y'] + dy_pdf)
 
     def _do_resize(self, cx, cy, shift_locked: bool):
-        if not self._initial_bounds:
-            return
-        bx0, by0, bw0, bh0 = self._initial_bounds
-        scale = self.pdf_viewer.get_page_to_screen_scale()
-        if not scale:
+        if self._resize_local_bbox0 is None:
             return
 
-        # Current mouse in PDF coords
         mpx, mpy = self._canvas_to_pdf(cx, cy)
-        # Start mouse in PDF coords
-        spx, spy = self._drag_start_pdf
-        dx = mpx - spx
-        dy = mpy - spy   # PDF coords: positive = up
+        lx, ly = geo.world_to_frame(mpx, mpy, self._resize_angle)
+        slx, sly = self._resize_local_start
+        dx_local = lx - slx
+        dy_local = ly - sly
 
-        ht = self._resize_handle
-        new_x, new_y = bx0, by0
-        new_w, new_h = bw0, bh0
+        snapshots = {image_id: (s['x'], s['y'], s['width'], s['height'])
+                     for image_id, s in self._initial_states.items()}
+        results = geo.resize_in_frame(
+            snapshots, self._resize_angle, self._resize_local_bbox0,
+            self._resize_handle, dx_local, dy_local, shift_locked, MIN_OBJ_SIZE)
 
-        # Compute new bounds from handle type
-        if 'L' in ht:
-            new_x = bx0 + dx
-            new_w = bw0 - dx
-        elif 'R' in ht:
-            new_w = bw0 + dx
-
-        if 'T' in ht:
-            # top handle: in PDF coords, top = by+bh; dragging up = larger y = larger height
-            new_y = by0 + dy
-            new_h = bh0 - dy
-        elif 'B' in ht:
-            # bottom handle: dragging down = smaller y = larger height
-            new_h = bh0 + dy
-
-        new_w = max(MIN_OBJ_SIZE, new_w)
-        new_h = max(MIN_OBJ_SIZE, new_h)
-
-        # Shift → aspect ratio lock
-        if shift_locked and bw0 > 0 and bh0 > 0:
-            ar = bw0 / bh0
-            if ht in ('TL', 'TR', 'BR', 'BL'):
-                sw = new_w / bw0
-                sh = new_h / bh0
-                s = (sw + sh) / 2.0
-                new_w = max(MIN_OBJ_SIZE, bw0 * s)
-                new_h = max(MIN_OBJ_SIZE, bh0 * s)
-                # Recompute anchor-side position
-                if 'L' in ht:
-                    new_x = (bx0 + bw0) - new_w
-                if 'T' in ht:
-                    new_y = (by0 + bh0) - new_h
-            elif ht in ('L', 'R'):
-                new_h = new_w / ar
-            elif ht in ('T', 'B'):
-                new_w = new_h * ar
-
-        if new_w <= 0 or new_h <= 0:
-            return
-
-        sx = new_w / bw0 if bw0 > 0 else 1.0
-        sy = new_h / bh0 if bh0 > 0 else 1.0
-
-        # Anchor point (opposite corner/edge) in PDF coords
-        ax = bx0 if 'R' in ht else bx0 + bw0
-        ay = by0 if 'T' in ht else by0 + bh0
-
-        for image_id, snap in self._initial_states.items():
-            ox, oy, ow, oh = snap['x'], snap['y'], snap['width'], snap['height']
-            t_x = ax + (ox - ax) * sx
-            t_y = ay + (oy - ay) * sy
-            t_w = max(MIN_OBJ_SIZE, ow * sx)
-            t_h = max(MIN_OBJ_SIZE, oh * sy)
-            self.manager.set_image_position(image_id, t_x, t_y)
-            self.manager.set_image_size(image_id, t_w, t_h)
+        for image_id, (nx, ny, nw, nh) in results.items():
+            self.manager.set_image_position(image_id, nx, ny)
+            self.manager.set_image_size(image_id, nw, nh)
 
     def _do_rotate(self, cx, cy):
         gcx, gcy = self._rotate_center_canvas
         cur_angle = math.atan2(cy - gcy, cx - gcx)
         delta_canvas = cur_angle - self._rotate_start_angle  # radians, clockwise in canvas
 
-        # Canvas: y-down → clockwise delta → increase rotation value (clockwise in PDF display)
+        # Canvas: y-down -> clockwise delta -> increase rotation value (clockwise in PDF display)
         delta_deg = math.degrees(delta_canvas)
 
         # PDF math convention (y-up): clockwise canvas = counterclockwise PDF
@@ -575,6 +646,27 @@ class ImageOverlayController:
             obj = self.manager.get_image_object(image_id)
             if obj and (snap['x'], snap['y']) != (obj.x, obj.y):
                 moves[image_id] = (snap['x'], snap['y'], obj.x, obj.y)
+
+        if self._duplicate_drag_cmd is not None:
+            # Ctrl+Shift+drag: the duplicate(s) are already a single
+            # PasteObjectsCommand on the undo stack (pushed in
+            # _begin_duplicate_drag). Patch that command's own snapshot
+            # positions to the final dragged location instead of pushing a
+            # second Move command -- one undo now removes the whole
+            # duplicate-and-drag gesture, and redo recreates it already in
+            # the dragged spot.
+            cmd = self._duplicate_drag_cmd
+            self._duplicate_drag_cmd = None
+            if moves:
+                id_to_snap = dict(zip(cmd.added_ids, cmd.snapshots))
+                for image_id in moves:
+                    snap = id_to_snap.get(image_id)
+                    obj = self.manager.get_image_object(image_id)
+                    if snap is not None and obj:
+                        snap['x'] = obj.x
+                        snap['y'] = obj.y
+            return
+
         if not moves:
             return
         if len(moves) == 1:
@@ -668,11 +760,64 @@ class ImageOverlayController:
         self.undo_manager.execute(cmd)
         self.redraw()
 
-    # ------------------------------------------------------------------ static helper
+    # ------------------------------------------------------------------ delete / z-order
 
-    @staticmethod
-    def _snapshot(obj):
-        return {'x': obj.x, 'y': obj.y, 'width': obj.width, 'height': obj.height}
+    def delete_selection(self):
+        """Delete every currently-selected object as a single undo step."""
+        if not self.selected_ids or not self.pdf_viewer.document:
+            return
+        page_num = self.pdf_viewer.current_page
+        objs = [self.manager.get_image_object(i) for i in self.selected_ids]
+        objs = [o for o in objs if o]
+        if not objs:
+            return
+        cmd = DeleteManyCommand(self.manager, page_num, objs)
+        self.undo_manager.execute(cmd)
+        self._select([])
+
+    def _bring_selection_to_front(self):
+        if not self.selected_ids or not self.pdf_viewer.document:
+            return
+        page_num = self.pdf_viewer.current_page
+        page_images = self.manager.get_page_images(page_num)
+        if not page_images:
+            return
+        max_z = max(o.z_index for o in page_images)
+        selected_sorted = sorted(
+            (o for o in (self.manager.get_image_object(i) for i in self.selected_ids) if o),
+            key=lambda o: o.z_index)
+        changes = {}
+        next_z = max_z + 1
+        for obj in selected_sorted:
+            changes[obj.id] = (obj.z_index, next_z)
+            next_z += 1
+        if changes:
+            self.undo_manager.execute(ChangeZIndexManyCommand(self.manager, changes))
+            self.redraw()
+
+    def _send_selection_to_back(self):
+        if not self.selected_ids or not self.pdf_viewer.document:
+            return
+        page_num = self.pdf_viewer.current_page
+        page_images = self.manager.get_page_images(page_num)
+        if not page_images:
+            return
+        selected_set = set(self.selected_ids)
+        others = [o for o in page_images if o.id not in selected_set]
+        selected_sorted = sorted(
+            (o for o in (self.manager.get_image_object(i) for i in self.selected_ids) if o),
+            key=lambda o: o.z_index)
+        changes = {}
+        next_z = 0
+        for obj in selected_sorted:
+            changes[obj.id] = (obj.z_index, next_z)
+            next_z += 1
+        for obj in others:
+            changes[obj.id] = (obj.z_index, next_z)
+            next_z += 1
+        if changes:
+            self.undo_manager.execute(ChangeZIndexManyCommand(self.manager, changes))
+            self.redraw()
 
 
 class ImagePropertiesPanel(tk.Frame):

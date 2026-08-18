@@ -3,9 +3,15 @@ PDF Footer Editor - Constants and Configuration
 """
 
 import os
+import sys
 
-# Get the project root directory
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Get the project root directory. When running from a PyInstaller one-file EXE,
+# resources are extracted under sys._MEIPASS, which is the correct base for
+# bundled assets like logo.ico and .json configuration files.
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    PROJECT_ROOT = sys._MEIPASS
+else:
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Font mapping for ReportLab compatibility
 FONT_MAPPING = {

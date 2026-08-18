@@ -5,6 +5,7 @@ PDF handling - reading, writing, overlay generation and merging
 import os
 from io import BytesIO
 from utils.fonts import get_reportlab_font
+from utils.geometry import rotated_bbox_size
 
 # Lazy imports
 _PdfReader = None
@@ -223,10 +224,14 @@ class FooterGenerator:
     def _draw_image_object(c, obj):
         """Draw a single image PageObject onto an in-progress reportlab canvas.
 
-        Rotation is applied to the PIL image before drawing (expand=True so no
-        corners are clipped), then the rotated image is letterboxed into the
-        bounding box, preserving aspect ratio. This keeps preview and export
-        visually identical.
+        Geometry mirrors app/image_overlay.py's on-screen preview exactly,
+        via the shared utils/geometry helpers: the source image is
+        rasterized at its true LOCAL (un-rotated) size first, then -- only
+        if rotated -- rotated with expand=True (no corners clipped, no
+        shrink-to-refit into the original box) and drawn at its analytic
+        rotated bounding-box size, centered on the object's center. There
+        is intentionally no separate/alternate rotation math for export;
+        this is the same shape the editor already showed the user.
 
         Silently skips objects that are invisible, missing an image path,
         or whose file cannot be opened -- an image problem must never abort
@@ -249,18 +254,21 @@ class FooterGenerator:
                 pil_img.putalpha(alpha)
 
             rotation = getattr(obj, 'rotation', 0.0)
+            box_w, box_h = obj.width, obj.height
             if rotation:
-                # Rotate the PIL image (expand=True: full image, no corner clipping).
-                # Then letterbox into the bounding box, centered, aspect-preserved.
+                # Rasterize at the object's true local (un-rotated) size at a
+                # fixed density -- export quality only, not related to the
+                # PDF-point geometry -- then rotate losslessly.
+                px_per_pt = 4.0
+                local_w_px = max(1, round(box_w * px_per_pt))
+                local_h_px = max(1, round(box_h * px_per_pt))
+                pil_img = pil_img.resize((local_w_px, local_h_px), Image.LANCZOS)
                 pil_img = pil_img.rotate(-rotation, expand=True, resample=Image.BICUBIC)
-                img_w, img_h = pil_img.size
-                box_w, box_h = obj.width, obj.height
-                s = min(box_w / img_w, box_h / img_h) if (img_w > 0 and img_h > 0) else 1.0
-                draw_w = img_w * s
-                draw_h = img_h * s
-                draw_x = obj.x + (box_w - draw_w) / 2.0
-                draw_y = obj.y + (box_h - draw_h) / 2.0
-                c.drawImage(_ImageReader(pil_img), draw_x, draw_y, draw_w, draw_h, mask='auto')
+
+                rot_w_pt, rot_h_pt = rotated_bbox_size(box_w, box_h, rotation)
+                draw_x = obj.x + box_w / 2.0 - rot_w_pt / 2.0
+                draw_y = obj.y + box_h / 2.0 - rot_h_pt / 2.0
+                c.drawImage(_ImageReader(pil_img), draw_x, draw_y, rot_w_pt, rot_h_pt, mask='auto')
             else:
                 c.drawImage(_ImageReader(pil_img), obj.x, obj.y, obj.width, obj.height, mask='auto')
         except Exception as e:

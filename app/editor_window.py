@@ -196,7 +196,13 @@ class PDFEditorApp:
         self.root.bind_all('<Control-s>', lambda e: self.save_project())
         self.root.bind_all('<Control-e>', lambda e: self.export_pdf())
         self.root.bind_all('<Delete>', self._delete_selected_image)
-        # Image-specific shortcuts fire only when no text field has focus
+        # Image-specific shortcuts fire only when no text field has focus.
+        # Bound once here (root-level, focus-independent) rather than also
+        # on the canvas widget -- binding the same sequence in both places
+        # made Tk fire both handlers on a single keypress, which is what
+        # made copy/paste/group feel unreliable (double-invoked).
+        self.root.bind_all('<Control-c>', self._copy_images)
+        self.root.bind_all('<Control-v>', self._paste_images)
         self.root.bind_all('<Control-g>', lambda e: self._group_images_if_canvas(e))
         self.root.bind_all('<Control-G>', lambda e: self._ungroup_images_if_canvas(e))
 
@@ -438,8 +444,9 @@ class PDFEditorApp:
         focused = self.root.focus_get()
         if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
             return
-        if self.image_overlay.selected_id:
-            self.image_properties._delete()
+        if self.image_overlay.selected_ids:
+            self.image_overlay.delete_selection()
+            self.image_properties.clear()
 
     def _copy_images(self, event=None):
         focused = self.root.focus_get()

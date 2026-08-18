@@ -14,6 +14,7 @@ Manages:
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 from models.models import Document, PageObject
+from utils.geometry import point_in_object
 
 
 @dataclass
@@ -208,10 +209,11 @@ class ImageEditor:
             obj = manager.get_image_object(image_id)
             if not obj:
                 continue
-            
-            # Check if point is within image bounds
-            if (obj.x <= x <= obj.x + obj.width and
-                obj.y <= y <= obj.y + obj.height):
+
+            # Check if point is within the object's rotated bounds (not
+            # just its axis-aligned x/y/width/height) so rotated objects
+            # remain clickable at their true, on-screen footprint.
+            if point_in_object(x, y, obj.x, obj.y, obj.width, obj.height, obj.rotation):
                 images_at_pos.append((obj.z_index, image_id))
         
         if not images_at_pos:
