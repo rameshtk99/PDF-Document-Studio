@@ -13,15 +13,19 @@ Document.global_settings.footer_config, so switching tabs stays
 consistent.
 """
 
+import json
 import os
 import tkinter as tk
 import tkinter.font as tkFont
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from typing import Callable, Optional
 
 from models import Document, FooterConfig
 from utils.fonts import get_filtered_fonts, get_available_tk_fonts
-from utils.constants import FOOTER_DEFAULT_FONT_SIZE, FOOTER_DEFAULT_COLUMNS, INCH_TO_PDF_POINT
+from utils.constants import (
+    FOOTER_DEFAULT_FONT_SIZE, FOOTER_DEFAULT_COLUMNS, INCH_TO_PDF_POINT,
+    QUICK_FOOTER_DRAFTS_DIR, QUICK_FOOTER_DRAFTS_FILE,
+)
 from app.document_commands import ChangeGlobalFooterCommand
 
 
@@ -64,6 +68,9 @@ class QuickFooterPanel(tk.Frame):
         self.entries_frame: Optional[tk.Frame] = None
         self._suspend = False
 
+        self.drafts: dict = self._load_drafts_from_disk()
+        self.draft_var = tk.StringVar(value="")
+
         self._build_ui()
 
     def _build_ui(self):
@@ -77,6 +84,21 @@ class QuickFooterPanel(tk.Frame):
                       "Click Apply to set it on ALL pages; Export PDF to save a file.\n"
                       "For a different footer per page, use the Page Settings tab."
                  ).pack(side=tk.TOP, fill=tk.X, padx=6, pady=(6, 8), anchor='w')
+
+        drafts_frame = tk.Frame(self)
+        drafts_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 8))
+        tk.Label(drafts_frame, text="Draft:").pack(side=tk.LEFT)
+        self.draft_combo = ttk.Combobox(drafts_frame, textvariable=self.draft_var,
+                                         values=sorted(self.drafts.keys()),
+                                         state='readonly', width=14)
+        self.draft_combo.pack(side=tk.LEFT, padx=4)
+        self.draft_combo.bind('<<ComboboxSelected>>', lambda e: self._on_draft_selected())
+        tk.Button(drafts_frame, text="\U0001F4BE", width=3,
+                  command=self._save_current_as_draft).pack(side=tk.LEFT, padx=(6, 1))
+        tk.Button(drafts_frame, text="✎", width=3,
+                  command=self._rename_selected_draft).pack(side=tk.LEFT, padx=1)
+        tk.Button(drafts_frame, text="\U0001F5D1", width=3,
+                  command=self._delete_selected_draft).pack(side=tk.LEFT, padx=1)
 
         font_frame = tk.Frame(self)
         font_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=3)
@@ -270,3 +292,99 @@ class QuickFooterPanel(tk.Frame):
             self.on_export_requested()
         else:
             messagebox.showinfo("Export", "Use File > Export PDF to save the final PDF.")
+
+    # ------------------------------------------------------------------ named drafts
+
+    @staticmethod
+    def _load_drafts_from_disk() -> dict:
+        try:
+            with open(QUICK_FOOTER_DRAFTS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_drafts_to_disk(self):
+        try:
+            os.makedirs(QUICK_FOOTER_DRAFTS_DIR, exist_ok=True)
+            with open(QUICK_FOOTER_DRAFTS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.drafts, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            messagebox.showwarning("Draft Not Saved", f"Could not write draft file:\n{e}")
+
+    def _refresh_draft_list(self, select_name: Optional[str] = None):
+        self.draft_combo.config(values=sorted(self.drafts.keys()))
+        self.draft_var.set(select_name or "")
+
+    def _draft_data_from_ui(self) -> dict:
+        return {
+            'font_name': self.font_var.get(),
+            'font_size': self.font_size_var.get(),
+            'gap_in': self.gap_var.get(),
+            'line_gap': self.line_gap_var.get(),
+            'compress': self.compress_var.get(),
+            'columns': self.col_count_var.get(),
+            'entries': [[l1.get(), l2.get()] for l1, l2 in self.footer_entries],
+        }
+
+    def _apply_draft_data_to_ui(self, data: dict):
+        self._suspend = True
+        self.font_var.set(data.get('font_name') if data.get('font_name') in self.fonts_available
+                           else self.fonts_available[0])
+        self.font_size_var.set(data.get('font_size', FOOTER_DEFAULT_FONT_SIZE))
+        self.gap_var.set(data.get('gap_in', 1.0))
+        self.line_gap_var.set(data.get('line_gap', 4.0))
+        self.compress_var.set(data.get('compress', True))
+        self.col_count_var.set(data.get('columns', FOOTER_DEFAULT_COLUMNS))
+        self._suspend = False
+        self._set_columns(preserve_values=data.get('entries'))
+        self._on_setting_changed()
+
+    def _on_draft_selected(self):
+        name = self.draft_var.get()
+        if name and name in self.drafts:
+            self._apply_draft_data_to_ui(self.drafts[name])
+
+    def _save_current_as_draft(self):
+        suggested = self.draft_var.get()
+        name = simpledialog.askstring("Save Draft", "Draft name:", initialvalue=suggested, parent=self)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if name in self.drafts and not messagebox.askyesno(
+                "Overwrite Draft", f'A draft named "{name}" already exists. Overwrite it?'):
+            return
+        self.drafts[name] = self._draft_data_from_ui()
+        self._save_drafts_to_disk()
+        self._refresh_draft_list(select_name=name)
+
+    def _rename_selected_draft(self):
+        old_name = self.draft_var.get()
+        if not old_name or old_name not in self.drafts:
+            messagebox.showinfo("Rename Draft", "Select a draft first.")
+            return
+        new_name = simpledialog.askstring("Rename Draft", "New name:", initialvalue=old_name, parent=self)
+        if not new_name:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == old_name:
+            return
+        if new_name in self.drafts and not messagebox.askyesno(
+                "Overwrite Draft", f'A draft named "{new_name}" already exists. Overwrite it?'):
+            return
+        self.drafts[new_name] = self.drafts.pop(old_name)
+        self._save_drafts_to_disk()
+        self._refresh_draft_list(select_name=new_name)
+
+    def _delete_selected_draft(self):
+        name = self.draft_var.get()
+        if not name or name not in self.drafts:
+            messagebox.showinfo("Delete Draft", "Select a draft first.")
+            return
+        if not messagebox.askyesno("Delete Draft", f'Delete draft "{name}"?'):
+            return
+        del self.drafts[name]
+        self._save_drafts_to_disk()
+        self._refresh_draft_list()

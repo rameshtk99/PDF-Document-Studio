@@ -46,6 +46,15 @@ FOOTER_DEFAULT_COLUMNS = 5
 import tempfile
 DRAFT_FILE_PATH = os.path.join(tempfile.gettempdir(), "pdf_footer_draft.json")
 
+# Named Quick Footer drafts (user-saved presets, distinct from the single
+# auto-draft above). Stored under the user's own AppData\Local rather than
+# temp (survives temp-cleanup/reboots) or the install folder (would need
+# admin rights to write to) -- writable for a normal user both when run
+# from source and from a packaged EXE.
+QUICK_FOOTER_DRAFTS_DIR = os.path.join(
+    os.path.expanduser('~'), 'AppData', 'Local', 'PDFDocumentStudio')
+QUICK_FOOTER_DRAFTS_FILE = os.path.join(QUICK_FOOTER_DRAFTS_DIR, 'quick_footer_drafts.json')
+
 # Project file extension
 PROJECT_FILE_EXTENSION = '.pdfeditor'
 

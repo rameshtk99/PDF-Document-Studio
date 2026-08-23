@@ -149,14 +149,6 @@ class PDFEditorApp:
         self.side_notebook = ttk.Notebook(side_panel)
         self.side_notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        self.page_settings_panel = PageSettingsPanel(
-            self.side_notebook, undo_manager=self.undo_manager,
-            on_settings_changed=self._on_footer_settings_changed,
-            on_export_requested=self.export_pdf,
-            on_preview_changed=self._on_footer_preview_changed,
-        )
-        self.side_notebook.add(self.page_settings_panel, text="Page Settings")
-
         self.quick_footer_panel = QuickFooterPanel(
             self.side_notebook, undo_manager=self.undo_manager,
             on_preview_changed=self._on_footer_preview_changed,
@@ -164,6 +156,14 @@ class PDFEditorApp:
         )
         self.quick_footer_panel.get_current_page = lambda: self.pdf_viewer.current_page
         self.side_notebook.add(self.quick_footer_panel, text="Quick Footer")
+
+        self.page_settings_panel = PageSettingsPanel(
+            self.side_notebook, undo_manager=self.undo_manager,
+            on_settings_changed=self._on_footer_settings_changed,
+            on_export_requested=self.export_pdf,
+            on_preview_changed=self._on_footer_preview_changed,
+        )
+        self.side_notebook.add(self.page_settings_panel, text="Page Settings")
 
         self.image_overlay = ImageOverlayController(
             self.pdf_viewer, self.image_manager, self.image_editor, self.undo_manager,
