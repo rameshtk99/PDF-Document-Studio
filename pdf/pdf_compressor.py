@@ -47,6 +47,7 @@ class CompressionMode(str, Enum):
     BEST_QUALITY = 'best_quality'
     BALANCED = 'balanced'
     MAXIMUM = 'maximum'
+    SCREENSHOT = 'screenshot'  # see PDFCompressor.compress_screenshot()
 
 
 class PDFCompressionError(Exception):
@@ -81,6 +82,21 @@ _LADDER = [
     (160, 70),
     (150, 68),
     (150, 60),
+]
+
+# Rungs for compress_screenshot() (whole-PAGE rasterization, not just
+# embedded images -- see that method). 150-200 DPI is the standard
+# "reads sharp on A4 at arm's length / prints cleanly" range; the floor
+# (100 DPI / 50 quality) is deliberately still legible for text rather than
+# chasing the size cap past the point of being useful.
+_SCREENSHOT_LADDER = [
+    (200, 85),
+    (180, 80),
+    (160, 75),
+    (150, 70),
+    (150, 60),
+    (120, 55),
+    (100, 50),
 ]
 
 _IMAGE_HEAVY_THRESHOLD = 0.15   # fraction of page area covered by images
@@ -182,6 +198,97 @@ class PDFCompressor:
                 doc.close()
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def compress_screenshot(self, input_path: str, output_path: str,
+                             max_page_size_kb: float = 200.0) -> CompressionResult:
+        """"Screenshot" style compression: every page is rasterized whole
+        (like a screen capture of the rendered page, the same way a
+        snipping tool would grab it) and re-inserted at its original
+        physical size, instead of selectively recompressing embedded
+        images. This flattens text/vector content to a picture -- text
+        stops being selectable/searchable -- in exchange for a
+        predictable, aggressive per-page size cap regardless of what's on
+        the page. Use compress() (the default, document-aware pipeline)
+        when text/vector content should stay untouched.
+
+        Each page is rasterized at the gentlest (dpi, jpeg_quality) rung
+        (see _SCREENSHOT_LADDER) that fits under max_page_size_kb, so
+        quality is only sacrificed as far as the cap actually requires --
+        never blanket-degraded to the harshest rung.
+        """
+        fitz = _ensure_fitz()
+        if not os.path.exists(input_path):
+            raise PDFCompressionError(f"Input file not found: {input_path}")
+
+        original_size = os.path.getsize(input_path)
+        max_page_bytes = max_page_size_kb * 1024
+
+        doc = fitz.open(input_path)
+        try:
+            if doc.needs_pass:
+                raise PDFCompressionError(
+                    "Password-protected PDFs are not supported for compression.")
+
+            page_count = doc.page_count
+            out_doc = fitz.open()
+            try:
+                pages_under_cap = 0
+                for page_index in range(page_count):
+                    page = doc[page_index]
+                    jpeg_bytes, fits = self._rasterize_page_under_cap(page, max_page_bytes)
+                    if fits:
+                        pages_under_cap += 1
+                    new_page = out_doc.new_page(width=page.rect.width, height=page.rect.height)
+                    new_page.insert_image(new_page.rect, stream=jpeg_bytes)
+
+                tmp_dir = tempfile.mkdtemp(prefix="pdfscreenshot_")
+                try:
+                    tmp_path = os.path.join(tmp_dir, "screenshot_output.pdf")
+                    out_doc.save(tmp_path, garbage=4, deflate=True, clean=True, use_objstms=1)
+                    self._validate(tmp_path, doc)
+                    shutil.copyfile(tmp_path, output_path)
+                finally:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+            finally:
+                out_doc.close()
+        finally:
+            doc.close()
+
+        output_size = os.path.getsize(output_path)
+        all_fit = pages_under_cap == page_count
+        message = (
+            f"Flattened {page_count} page(s) to images (~{max_page_size_kb:g} KB/page target); "
+            f"{pages_under_cap}/{page_count} page(s) at or under the cap."
+        )
+        return CompressionResult(
+            output_path=output_path,
+            original_size=original_size,
+            output_size=output_size,
+            page_count=page_count,
+            mode=CompressionMode.SCREENSHOT.value,
+            max_size_mb=(max_page_size_kb * page_count) / 1024.0,
+            target_reached=all_fit,
+            message=message,
+        )
+
+    @staticmethod
+    def _rasterize_page_under_cap(page, max_page_bytes: float):
+        """Render `page` to a JPEG, trying _SCREENSHOT_LADDER rungs in
+        order until one fits under max_page_bytes. Returns (jpeg_bytes,
+        fits) -- if even the safety-floor rung doesn't fit, its bytes are
+        still returned (fits=False) rather than degrading further."""
+        fitz = _ensure_fitz()
+        result_bytes = b""
+        for dpi, quality in _SCREENSHOT_LADDER:
+            scale = dpi / 72.0
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            pil = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            buf = io.BytesIO()
+            pil.save(buf, format='JPEG', quality=quality, optimize=True)
+            result_bytes = buf.getvalue()
+            if len(result_bytes) <= max_page_bytes:
+                return result_bytes, True
+        return result_bytes, False
 
     # -- pipeline stages -----------------------------------------------------
 

@@ -34,11 +34,12 @@ class QuickFooterPanel(tk.Frame):
 
     def __init__(self, parent, undo_manager=None,
                  on_preview_changed: Optional[Callable[[Optional[FooterConfig], int], None]] = None,
-                 on_export_requested: Optional[Callable] = None, **kwargs):
+                 on_export_requested: Optional[Callable] = None,
+                 on_compress_requested: Optional[Callable] = None, **kwargs):
         """
         Args:
             parent: Parent widget
-            undo_manager: Shared UndoRedoManager -- "Apply to All Pages"
+            undo_manager: Shared UndoRedoManager -- "Apply All"
                 pushes a real, undo-able command here
             on_preview_changed: Callback(draft_footer_config, page_number)
                 fired on every keystroke/font change for the live PDF
@@ -46,12 +47,16 @@ class QuickFooterPanel(tk.Frame):
                 draft. page_number is always the viewer's current page,
                 since this panel applies uniformly to every page.
             on_export_requested: Callback for the "Export PDF..." button
+                (exports as-is, no compression)
+            on_compress_requested: Callback for the "Compress PDF..."
+                button (exports, then runs it through the compressor)
         """
         super().__init__(parent, **kwargs)
         self.document: Optional[Document] = None
         self.undo_manager = undo_manager
         self.on_preview_changed = on_preview_changed
         self.on_export_requested = on_export_requested
+        self.on_compress_requested = on_compress_requested
         self.get_current_page: Optional[Callable[[], int]] = None  # set by editor_window
 
         available = get_available_tk_fonts()
@@ -79,26 +84,21 @@ class QuickFooterPanel(tk.Frame):
         tk.Label(header, text="Quick Footer", bg='darkgray', fg='white',
                  font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=4, pady=2)
 
-        tk.Label(self, justify=tk.LEFT, fg='gray20', font=('Arial', 8),
-                 text="Type below to preview live on the current page.\n"
-                      "Click Apply to set it on ALL pages; Export PDF to save a file.\n"
-                      "For a different footer per page, use the Page Settings tab."
-                 ).pack(side=tk.TOP, fill=tk.X, padx=6, pady=(6, 8), anchor='w')
-
         drafts_frame = tk.Frame(self)
-        drafts_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 8))
-        tk.Label(drafts_frame, text="Draft:").pack(side=tk.LEFT)
+        drafts_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(8, 8))
+        drafts_frame.columnconfigure(1, weight=1)
+        tk.Label(drafts_frame, text="Draft:").grid(row=0, column=0, sticky='w')
         self.draft_combo = ttk.Combobox(drafts_frame, textvariable=self.draft_var,
-                                         values=sorted(self.drafts.keys()),
-                                         state='readonly', width=14)
-        self.draft_combo.pack(side=tk.LEFT, padx=4)
+                                         values=sorted(self.drafts.keys()), state='readonly')
+        self.draft_combo.grid(row=0, column=1, sticky='ew', padx=4)
         self.draft_combo.bind('<<ComboboxSelected>>', lambda e: self._on_draft_selected())
-        tk.Button(drafts_frame, text="\U0001F4BE", width=3,
-                  command=self._save_current_as_draft).pack(side=tk.LEFT, padx=(6, 1))
-        tk.Button(drafts_frame, text="✎", width=3,
-                  command=self._rename_selected_draft).pack(side=tk.LEFT, padx=1)
-        tk.Button(drafts_frame, text="\U0001F5D1", width=3,
-                  command=self._delete_selected_draft).pack(side=tk.LEFT, padx=1)
+        icon_font = ('Segoe UI Emoji', 10)
+        tk.Button(drafts_frame, text="\U0001F4BE", font=icon_font, width=3,
+                  command=self._save_current_as_draft).grid(row=0, column=2, padx=(6, 1))
+        tk.Button(drafts_frame, text="✎", font=icon_font, width=3,
+                  command=self._rename_selected_draft).grid(row=0, column=3, padx=1)
+        tk.Button(drafts_frame, text="\U0001F5D1", font=icon_font, width=3,
+                  command=self._delete_selected_draft).grid(row=0, column=4, padx=1)
 
         font_frame = tk.Frame(self)
         font_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=3)
@@ -125,11 +125,6 @@ class QuickFooterPanel(tk.Frame):
                    width=5, command=self._on_setting_changed).pack(side=tk.LEFT, padx=4)
         tk.Label(line_gap_frame, text="pt").pack(side=tk.LEFT)
 
-        tk.Label(self, text="Note: Preeti needs a Preeti keyboard layout to type Devanagari -- "
-                             "a normal keyboard types plain English no matter which font is set.",
-                 fg='gray30', font=('Arial', 7), wraplength=310, justify=tk.LEFT
-                 ).pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4), anchor='w')
-
         shrink_frame = tk.Frame(self)
         shrink_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 3))
         tk.Checkbutton(shrink_frame, text="Auto-shrink page content to fit footer",
@@ -152,11 +147,13 @@ class QuickFooterPanel(tk.Frame):
 
         btns = tk.Frame(self)
         btns.pack(side=tk.TOP, pady=8)
-        self.apply_button = tk.Button(btns, text="Apply to All Pages", command=self._apply_to_all,
-                                       bg='lightgreen', width=18)
+        self.apply_button = tk.Button(btns, text="Apply All", command=self._apply_to_all,
+                                       bg='lightgreen', width=12)
         self.apply_button.pack(side=tk.LEFT, padx=3)
         tk.Button(btns, text="Export PDF...", command=self._request_export,
-                  bg='#2e7d32', fg='white', width=14).pack(side=tk.LEFT, padx=3)
+                  bg='#2e7d32', fg='white', width=13).pack(side=tk.LEFT, padx=3)
+        tk.Button(btns, text="Compress PDF...", command=self._request_compress,
+                  bg='#1565c0', fg='white', width=13).pack(side=tk.LEFT, padx=3)
 
         self._set_columns()
 
@@ -186,6 +183,12 @@ class QuickFooterPanel(tk.Frame):
             self.entries_frame.destroy()
         self.entries_frame = tk.Frame(self.entries_container)
         self.entries_frame.pack(fill=tk.BOTH, expand=True)
+        # Entry columns (1 and 3) stretch to fill whatever width the side
+        # panel/window currently has; label columns (0 and 2) stay
+        # content-sized -- so the text boxes grow/shrink as the panel is
+        # resized instead of being stuck at a fixed character width.
+        self.entries_frame.columnconfigure(1, weight=1)
+        self.entries_frame.columnconfigure(3, weight=1)
 
         font_obj = self._current_font()
         self.footer_entries = []
@@ -193,16 +196,16 @@ class QuickFooterPanel(tk.Frame):
         count = max(1, min(5, self.col_count_var.get()))
         for i in range(count):
             tk.Label(self.entries_frame, text=f"Col {i + 1} Line 1:").grid(
-                row=i, column=0, sticky='e', pady=2)
+                row=i, column=0, sticky='e', pady=3)
             l1 = tk.StringVar()
-            e1 = tk.Entry(self.entries_frame, textvariable=l1, width=14, font=font_obj)
-            e1.grid(row=i, column=1, padx=2)
+            e1 = tk.Entry(self.entries_frame, textvariable=l1, font=font_obj)
+            e1.grid(row=i, column=1, sticky='ew', padx=2)
             e1.bind('<KeyRelease>', lambda e: self._on_setting_changed())
             tk.Label(self.entries_frame, text="Line 2:").grid(
                 row=i, column=2, sticky='e', padx=(6, 0))
             l2 = tk.StringVar()
-            e2 = tk.Entry(self.entries_frame, textvariable=l2, width=14, font=font_obj)
-            e2.grid(row=i, column=3, padx=2)
+            e2 = tk.Entry(self.entries_frame, textvariable=l2, font=font_obj)
+            e2.grid(row=i, column=3, sticky='ew', padx=2)
             e2.bind('<KeyRelease>', lambda e: self._on_setting_changed())
 
             if preserve_values and i < len(preserve_values):
@@ -292,6 +295,12 @@ class QuickFooterPanel(tk.Frame):
             self.on_export_requested()
         else:
             messagebox.showinfo("Export", "Use File > Export PDF to save the final PDF.")
+
+    def _request_compress(self):
+        if self.on_compress_requested:
+            self.on_compress_requested()
+        else:
+            messagebox.showinfo("Compress", "Use File > Compress PDF to save a compressed PDF.")
 
     # ------------------------------------------------------------------ named drafts
 

@@ -16,6 +16,7 @@ Tool (Classic) as a separate window, for anyone who prefers that flow.
 """
 
 import os
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -153,6 +154,7 @@ class PDFEditorApp:
             self.side_notebook, undo_manager=self.undo_manager,
             on_preview_changed=self._on_footer_preview_changed,
             on_export_requested=self.export_pdf,
+            on_compress_requested=self.compress_pdf,
         )
         self.quick_footer_panel.get_current_page = lambda: self.pdf_viewer.current_page
         self.side_notebook.add(self.quick_footer_panel, text="Quick Footer")
@@ -356,6 +358,44 @@ class PDFEditorApp:
     def open_compress_dialog(self):
         current_path = self.document.pdf_path if self.document else None
         CompressDialog(self.root, current_pdf_path=current_path)
+
+    def compress_pdf(self):
+        """"Compress PDF" button flow (Quick Footer / Page Settings tabs):
+        export the current document's committed state to a throwaway temp
+        file -- same content Export PDF would produce -- then hand that to
+        CompressDialog so the user picks a strategy/size and it compresses
+        + saves to their chosen final path. Unlike open_compress_dialog()
+        (Tools menu), this always reflects the live document, not
+        whatever's still on disk at self.document.pdf_path.
+        """
+        if not self.document:
+            return
+        fd, tmp_path = tempfile.mkstemp(suffix='.pdf', prefix='pdfstudio_precompress_')
+        os.close(fd)
+
+        self._set_ui_busy(True, "Preparing for compression...")
+
+        def worker():
+            try:
+                DocumentExporter(self.document).export(tmp_path)
+                self.root.after(0, lambda: self._on_precompress_export_done(tmp_path))
+            except Exception as e:
+                error_message = str(e)
+                self.root.after(0, lambda: self._on_precompress_export_error(tmp_path, error_message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_precompress_export_done(self, tmp_path):
+        self._set_ui_busy(False)
+        CompressDialog(self.root, current_pdf_path=tmp_path, cleanup_input_on_close=True)
+
+    def _on_precompress_export_error(self, tmp_path, message):
+        self._set_ui_busy(False)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        messagebox.showerror("Compress PDF", message)
 
     def open_classic_tool(self):
         from app.gui_app import FooterApp

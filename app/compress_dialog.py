@@ -30,14 +30,27 @@ _MODE_LABELS = [
 
 
 class CompressDialog(tk.Toplevel):
-    def __init__(self, parent, current_pdf_path: Optional[str] = None):
+    def __init__(self, parent, current_pdf_path: Optional[str] = None,
+                 cleanup_input_on_close: bool = False):
+        """
+        Args:
+            current_pdf_path: Pre-filled input PDF path.
+            cleanup_input_on_close: Delete the input file when this dialog
+                closes -- set by callers (e.g. the "Compress PDF" button
+                flow) that exported a throwaway temp file just to feed it
+                in here, so it doesn't linger after the dialog is done
+                with it.
+        """
         super().__init__(parent)
         self.title("Compress PDF")
-        self.geometry("500x460")
+        self.geometry("500x520")
         self.resizable(False, False)
         self.transient(parent)
 
         self._compressing = False
+        self._cleanup_input_on_close = cleanup_input_on_close
+        self._input_to_cleanup = current_pdf_path if cleanup_input_on_close else None
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui(current_pdf_path)
 
     def _build_ui(self, current_pdf_path):
@@ -48,30 +61,66 @@ class CompressDialog(tk.Toplevel):
         tk.Entry(self, textvariable=self.input_var, width=42).grid(row=0, column=1, **pad)
         tk.Button(self, text="Browse...", command=self._browse_input).grid(row=0, column=2, **pad)
 
-        tk.Label(self, text="Maximum output size:").grid(row=1, column=0, sticky='w', **pad)
+        tk.Label(self, text="Strategy:").grid(row=1, column=0, sticky='nw', **pad)
+        strategy_frame = tk.Frame(self)
+        strategy_frame.grid(row=1, column=1, columnspan=2, sticky='w', padx=10, pady=6)
+        self.strategy_var = tk.StringVar(value="smart")
+        tk.Radiobutton(strategy_frame, text="Smart Compress (recommended)", value="smart",
+                        variable=self.strategy_var, command=self._on_strategy_changed
+                        ).pack(anchor='w')
+        tk.Label(strategy_frame, text="Keeps text sharp/selectable -- only shrinks embedded images.",
+                 fg='gray40', font=('Arial', 8)).pack(anchor='w', padx=20)
+        tk.Radiobutton(strategy_frame, text="Screenshot Mode", value="screenshot",
+                        variable=self.strategy_var, command=self._on_strategy_changed
+                        ).pack(anchor='w', pady=(4, 0))
+        tk.Label(strategy_frame, text="Flattens every page to a compact image, like a screen capture --\n"
+                                       "predictable per-page size, but text is no longer selectable.",
+                 fg='gray40', font=('Arial', 8), justify=tk.LEFT).pack(anchor='w', padx=20)
+
+        # -- Smart Compress controls --
+        self.smart_frame = tk.Frame(self)
+        self.smart_frame.grid(row=2, column=0, columnspan=3, sticky='w')
+        tk.Label(self.smart_frame, text="Maximum output size:").grid(row=0, column=0, sticky='w', **pad)
         self.preset_var = tk.StringVar(value=_SIZE_PRESETS[1][0])  # default 10 MB
-        preset_combo = ttk.Combobox(self, textvariable=self.preset_var,
+        preset_combo = ttk.Combobox(self.smart_frame, textvariable=self.preset_var,
                                      values=[p[0] for p in _SIZE_PRESETS],
                                      state='readonly', width=18)
-        preset_combo.grid(row=1, column=1, sticky='w', **pad)
+        preset_combo.grid(row=0, column=1, sticky='w', **pad)
         preset_combo.bind('<<ComboboxSelected>>', self._on_preset_changed)
 
         self.custom_size_var = tk.DoubleVar(value=10.0)
-        self.custom_size_entry = tk.Spinbox(self, from_=0.1, to=1000, increment=0.5,
+        self.custom_size_entry = tk.Spinbox(self.smart_frame, from_=0.1, to=1000, increment=0.5,
                                              textvariable=self.custom_size_var, width=8,
                                              state=tk.DISABLED)
-        self.custom_size_entry.grid(row=1, column=2, sticky='w', **pad)
+        self.custom_size_entry.grid(row=0, column=2, sticky='w', **pad)
 
-        tk.Label(self, text="Compression mode:").grid(row=2, column=0, sticky='w', **pad)
+        tk.Label(self.smart_frame, text="Compression mode:").grid(row=1, column=0, sticky='w', **pad)
         self.mode_var = tk.StringVar(value=_MODE_LABELS[1][0])  # default Balanced
-        ttk.Combobox(self, textvariable=self.mode_var, values=[m[0] for m in _MODE_LABELS],
-                     state='readonly', width=30).grid(row=2, column=1, columnspan=2, sticky='w', **pad)
+        ttk.Combobox(self.smart_frame, textvariable=self.mode_var, values=[m[0] for m in _MODE_LABELS],
+                     state='readonly', width=30).grid(row=1, column=1, columnspan=2, sticky='w', **pad)
 
-        tk.Label(self, text="The maximum size is an upper limit, not a target -- a PDF that's\n"
-                             "already smaller, or safely compresses well below it, is never\n"
-                             "padded back up to fill the limit.",
+        tk.Label(self.smart_frame,
+                 text="The maximum size is an upper limit, not a target -- a PDF that's\n"
+                      "already smaller, or safely compresses well below it, is never\n"
+                      "padded back up to fill the limit.",
                  fg='gray30', font=('Arial', 8), justify=tk.LEFT
-                 ).grid(row=3, column=0, columnspan=3, sticky='w', padx=10, pady=(0, 6))
+                 ).grid(row=2, column=0, columnspan=3, sticky='w', padx=10, pady=(0, 6))
+
+        # -- Screenshot Mode controls --
+        self.screenshot_frame = tk.Frame(self)
+        self.screenshot_frame.grid(row=2, column=0, columnspan=3, sticky='w')
+        tk.Label(self.screenshot_frame, text="Maximum size per page:").grid(
+            row=0, column=0, sticky='w', **pad)
+        self.max_page_kb_var = tk.DoubleVar(value=200.0)
+        tk.Spinbox(self.screenshot_frame, from_=20, to=2000, increment=10,
+                   textvariable=self.max_page_kb_var, width=8).grid(row=0, column=1, sticky='w', **pad)
+        tk.Label(self.screenshot_frame, text="KB").grid(row=0, column=2, sticky='w')
+        tk.Label(self.screenshot_frame,
+                 text="Each page is rasterized at the best quality (150-200 DPI) that still\n"
+                      "fits this cap -- good for A4 printing without ballooning file size.",
+                 fg='gray30', font=('Arial', 8), justify=tk.LEFT
+                 ).grid(row=1, column=0, columnspan=3, sticky='w', padx=10, pady=(0, 6))
+        self.screenshot_frame.grid_remove()  # hidden until Screenshot Mode is selected
 
         self.status_label = tk.Label(self, text="", fg='gray20', anchor='w',
                                       justify=tk.LEFT, wraplength=460)
@@ -88,7 +137,23 @@ class CompressDialog(tk.Toplevel):
         self.compress_button = tk.Button(btns, text="Compress...", command=self._start_compress,
                                           bg='#2e7d32', fg='white', width=16)
         self.compress_button.pack(side=tk.LEFT, padx=4)
-        tk.Button(btns, text="Close", command=self.destroy).pack(side=tk.LEFT, padx=4)
+        tk.Button(btns, text="Close", command=self._on_close).pack(side=tk.LEFT, padx=4)
+
+    def _on_strategy_changed(self):
+        if self.strategy_var.get() == "screenshot":
+            self.smart_frame.grid_remove()
+            self.screenshot_frame.grid()
+        else:
+            self.screenshot_frame.grid_remove()
+            self.smart_frame.grid()
+
+    def _on_close(self):
+        if self._cleanup_input_on_close and self._input_to_cleanup:
+            try:
+                os.remove(self._input_to_cleanup)
+            except OSError:
+                pass
+        self.destroy()
 
     def _on_preset_changed(self, event=None):
         is_custom = self.preset_var.get() == "Custom"
@@ -129,13 +194,21 @@ class CompressDialog(tk.Toplevel):
         if not output_path:
             return
 
-        try:
-            max_size_mb = self._resolve_max_size_mb()
-        except (tk.TclError, ValueError):
-            messagebox.showerror("Compress PDF", "Enter a valid custom size in MB.")
-            return
+        screenshot_mode = self.strategy_var.get() == "screenshot"
 
-        mode = self._resolve_mode()
+        if screenshot_mode:
+            try:
+                max_page_kb = float(self.max_page_kb_var.get())
+            except (tk.TclError, ValueError):
+                messagebox.showerror("Compress PDF", "Enter a valid per-page size in KB.")
+                return
+        else:
+            try:
+                max_size_mb = self._resolve_max_size_mb()
+            except (tk.TclError, ValueError):
+                messagebox.showerror("Compress PDF", "Enter a valid custom size in MB.")
+                return
+            mode = self._resolve_mode()
 
         self._compressing = True
         self.compress_button.config(state=tk.DISABLED)
@@ -145,8 +218,12 @@ class CompressDialog(tk.Toplevel):
 
         def worker():
             try:
-                result = PDFCompressor().compress(input_path, output_path,
-                                                    max_size_mb=max_size_mb, mode=mode)
+                if screenshot_mode:
+                    result = PDFCompressor().compress_screenshot(
+                        input_path, output_path, max_page_size_kb=max_page_kb)
+                else:
+                    result = PDFCompressor().compress(input_path, output_path,
+                                                        max_size_mb=max_size_mb, mode=mode)
                 self.after(0, lambda: self._on_done(result, None))
             except Exception as e:
                 # Capture now -- `e` is unbound by the time a deferred
