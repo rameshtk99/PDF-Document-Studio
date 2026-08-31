@@ -95,7 +95,17 @@ class ThumbnailPanel(tk.Frame):
         self._drag_target_page: Optional[int] = None
         self._drag_ghost: Optional[tk.Toplevel] = None
         self._drag_ghost_offset: Tuple[int, int] = (0, 0)
-        self._drop_indicator: Optional[tk.Frame] = None
+
+        # Slide-to-open-gap animation state -- while dragging, every OTHER
+        # thumbnail is switched from pack() to place() so it can be
+        # smoothly animated sideways/up/down to the slot it would land in
+        # if the drag were dropped where the pointer currently is,
+        # visually "opening a gap" for the dragged page the way
+        # combinepdf.com does, instead of a static insertion-line.
+        self._drag_others: List[int] = []       # page numbers other than the dragged one, in fixed relative order
+        self._drag_slot_height: int = 0         # uniform per-thumbnail slot height (frame height + pady)
+        self._drag_gap_idx: Optional[int] = None  # which slot (within _drag_others + gap) currently holds the gap
+        self._drag_anim_jobs: Dict[int, str] = {}  # page_num -> pending after() id, for cancel/retarget mid-slide
 
         # Bumped on every load_document() call; the background render
         # thread and its scheduled main-thread callbacks carry the
@@ -181,16 +191,24 @@ class ThumbnailPanel(tk.Frame):
         self._load_generation += 1
         generation = self._load_generation
 
+        # Cancel any in-flight slide animations first -- their after()
+        # callbacks close over frame widgets that are about to be
+        # destroyed below, and a mid-drag reload (e.g. two page ops
+        # firing in quick succession) must not leave them scheduled
+        # against widgets that no longer exist ("bad window path name").
+        for job in self._drag_anim_jobs.values():
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+        self._drag_anim_jobs.clear()
+        self._drag_others = []
+        self._drag_gap_idx = None
+
         # Clear existing thumbnails
         for widget in self.thumbnails_frame.winfo_children():
             widget.destroy()
-        # The drop indicator (if one exists from a prior drag) is a child
-        # of thumbnails_frame and was just destroyed above along with
-        # everything else -- drop the now-stale reference too, or a later
-        # drag's _end_drag_ghost()/_update_drop_indicator() would call a
-        # method on a destroyed Tcl widget ("bad window path name").
-        self._drop_indicator = None
-        self._end_drag_ghost()  # likewise, a mid-drag reload shouldn't leave an orphaned ghost window
+        self._end_drag_ghost()  # a mid-drag reload shouldn't leave an orphaned ghost window
 
         if not document:
             return
@@ -206,13 +224,20 @@ class ThumbnailPanel(tk.Frame):
         for page_num in range(1, self.document.page_count + 1):
             if generation != self._load_generation:
                 return  # a newer load_document() superseded this run -- stop early
-            # Render thumbnail
+            # Render thumbnail. zoom=1.2 at this dpi -> ~245x317px for a
+            # Letter page -- deliberately bigger than the 120x160 target
+            # box below so PIL's .thumbnail() (which only ever shrinks,
+            # never enlarges) has something to downscale with real
+            # anti-aliasing. The previous dpi=24/zoom=0.15 rendered at
+            # only ~31x40px -- already smaller than the box, so
+            # .thumbnail() was a no-op and the button showed a tiny page
+            # floating in a mostly-empty box instead of filling it.
             src_path, src_page_num = _resolve_page_source(self.document, page_num)
             img = PDFRenderer.render_page(
                 src_path,
                 src_page_num,
-                dpi=24,  # Low DPI for thumbnails
-                zoom=0.15  # Small size
+                dpi=24,
+                zoom=1.2
             )
 
             if img is None:
@@ -221,7 +246,7 @@ class ThumbnailPanel(tk.Frame):
                     width=100, height=140,
                     text=f"P{page_num}"
                 )
-            
+
             # Resize to fit thumbnail panel (max 120x160)
             img.thumbnail((120, 160), PIL.Image.Resampling.LANCZOS)
 
@@ -405,8 +430,8 @@ class ThumbnailPanel(tk.Frame):
 
         target = self._page_at_screen_y(event.y_root)
         if target != self._drag_target_page:
-            self._update_drop_indicator(target)
             self._drag_target_page = target
+            self._animate_others_to_gap(self._compute_gap_idx(target))
 
     def _on_drag_release(self, event, page_num: int):
         drag_page = self._drag_page
@@ -417,6 +442,7 @@ class ThumbnailPanel(tk.Frame):
         self._dragging = False
         self._drag_target_page = None
         self._end_drag_ghost()
+        self._end_slide_layout()
         self._update_thumbnail_highlights()  # restores normal selection colors
 
         if was_dragging and drag_page is not None and target is not None and target != drag_page:
@@ -462,9 +488,10 @@ class ThumbnailPanel(tk.Frame):
                         f"+{event.y_root - self._drag_ghost_offset[1]}")
         self._drag_ghost = ghost
 
-        # Dim the source thumbnail in place so it's clear it's "picked up"
-        # and mid-move, without it visually competing with the ghost.
-        src_btn.config(bg='#ffe082')
+        # The floating ghost now represents the dragged page -- switch
+        # every OTHER thumbnail to place()-based layout so they can slide
+        # to open a gap for it as the drag moves.
+        self._begin_slide_layout(page_num)
 
     def _move_drag_ghost(self, event):
         if self._drag_ghost is not None:
@@ -476,8 +503,130 @@ class ThumbnailPanel(tk.Frame):
         if self._drag_ghost is not None:
             self._drag_ghost.destroy()
             self._drag_ghost = None
-        if self._drop_indicator is not None:
-            self._drop_indicator.place_forget()
+
+    # ------------------------------------------------------------ slide-to-open-gap animation
+
+    def _begin_slide_layout(self, drag_page: int):
+        """Switch every thumbnail frame from pack() to place(), anchored
+        at its current on-screen position (no visual jump), so the
+        "others" can be smoothly animated into a gap as the drag target
+        changes. The dragged page's own frame is hidden entirely -- the
+        floating ghost already represents it."""
+        self.thumbnails_frame.update_idletasks()
+        ordered_pages = sorted(self.thumbnail_frames.keys())
+        self._drag_others = [p for p in ordered_pages if p != drag_page]
+
+        frame_w = self.thumbnails_frame.winfo_width()
+        positions = {p: self.thumbnail_frames[p].winfo_y() for p in ordered_pages}
+        if len(ordered_pages) >= 2:
+            self._drag_slot_height = positions[ordered_pages[1]] - positions[ordered_pages[0]]
+        elif ordered_pages:
+            self._drag_slot_height = self.thumbnail_frames[ordered_pages[0]].winfo_height() + 4
+        else:
+            self._drag_slot_height = 170
+        if self._drag_slot_height <= 0:
+            self._drag_slot_height = 170
+
+        for p in self._drag_others:
+            frame = self.thumbnail_frames[p]
+            frame.pack_forget()
+            frame.place(x=0, y=positions[p], width=frame_w)
+
+        drag_frame = self.thumbnail_frames.get(drag_page)
+        if drag_frame:
+            drag_frame.pack_forget()
+
+        # The gap starts exactly where the dragged page originally was,
+        # so nothing needs to move until the drop target actually changes.
+        self._drag_gap_idx = drag_page - 1
+
+    def _compute_gap_idx(self, target_page: Optional[int]) -> int:
+        """Which slot (0..len(_drag_others)) the open gap should sit at
+        for the current drop target -- expressed as an index into
+        _drag_others "with a gap inserted", so slot i<gap_idx keeps
+        _drag_others[i] in its original relative order and slot
+        i>=gap_idx shifts it one slot later.
+
+        This MUST line up with Document.move_page's pop-then-insert
+        semantics (to_index = target_page - 1, since page numbers are
+        always exactly 1..N with no gaps -- a page's number already IS
+        its 0-based original-order index, plus one) or the animation
+        shows a different landing spot than the drop actually produces.
+        Using the target's position within _drag_others instead (its
+        index with the dragged page already removed) was off by one for
+        any target that originally came after the dragged page -- e.g.
+        dragging page 1 down onto page 2 computed the same gap slot as
+        "not dragging yet", so page 2 never visibly moved."""
+        if target_page is not None and target_page in self.thumbnail_frames:
+            return target_page - 1
+        # Hovering over nothing valid -- fall back to "no movement" by
+        # keeping whatever gap position is already in effect.
+        return self._drag_gap_idx if self._drag_gap_idx is not None else 0
+
+    def _animate_others_to_gap(self, gap_idx: int):
+        if gap_idx == self._drag_gap_idx:
+            return
+        self._drag_gap_idx = gap_idx
+        for i, p in enumerate(self._drag_others):
+            slot = i if i < gap_idx else i + 1
+            self._animate_frame_to_y(p, slot * self._drag_slot_height)
+
+    def _animate_frame_to_y(self, page_num: int, target_y: int, steps: int = 6, delay_ms: int = 15):
+        frame = self.thumbnail_frames.get(page_num)
+        if not frame:
+            return
+
+        old_job = self._drag_anim_jobs.pop(page_num, None)
+        if old_job:
+            try:
+                self.after_cancel(old_job)
+            except tk.TclError:
+                pass
+
+        try:
+            start_y = int(float(frame.place_info().get('y', target_y)))
+        except (TypeError, ValueError):
+            start_y = target_y
+
+        def tick(i):
+            # Bail out quietly if the drag ended or the panel was
+            # reloaded (frames destroyed/dict cleared) mid-animation.
+            if self.thumbnail_frames.get(page_num) is not frame:
+                return
+            t = i / steps
+            y = int(start_y + (target_y - start_y) * t)
+            try:
+                frame.place(y=y)
+            except tk.TclError:
+                return
+            if i < steps:
+                self._drag_anim_jobs[page_num] = self.after(delay_ms, lambda: tick(i + 1))
+            else:
+                self._drag_anim_jobs.pop(page_num, None)
+
+        tick(1)
+
+    def _end_slide_layout(self):
+        """Cancel any in-flight slide animations and restore normal
+        pack() layout in real page order. Safe to call even when a real
+        reorder is about to trigger a full load_document() reload
+        (which would rebuild everything from scratch anyway) -- it's
+        the only cleanup path for a cancelled/non-reordering drag."""
+        for job in self._drag_anim_jobs.values():
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+        self._drag_anim_jobs.clear()
+
+        for p in sorted(self.thumbnail_frames.keys()):
+            frame = self.thumbnail_frames.get(p)
+            if frame:
+                frame.place_forget()
+                frame.pack(fill=tk.X, padx=2, pady=2)
+
+        self._drag_others = []
+        self._drag_gap_idx = None
 
     def _page_at_screen_y(self, y_root: int) -> Optional[int]:
         """Which thumbnail's vertical span contains this screen y
@@ -495,27 +644,6 @@ class ThumbnailPanel(tk.Frame):
             if best_dist is None or dist < best_dist:
                 best_dist, best_page = dist, page_num
         return best_page
-
-    def _update_drop_indicator(self, target_page: Optional[int]):
-        """Show a thin horizontal bar just above the current drop target's
-        thumbnail -- "the dragged page will land here, pushing this one
-        down" -- updated live as the ghost moves, instead of a static
-        whole-thumbnail color tint."""
-        if target_page is None:
-            if self._drop_indicator is not None:
-                self._drop_indicator.place_forget()
-            return
-
-        target_frame = self.thumbnail_frames.get(target_page)
-        if not target_frame:
-            return
-
-        if self._drop_indicator is None:
-            self._drop_indicator = tk.Frame(self.thumbnails_frame, bg='#0080FF', height=4)
-
-        y = max(0, target_frame.winfo_y() - 2)
-        self._drop_indicator.place(x=0, y=y, relwidth=1.0)
-        self._drop_indicator.lift()
 
     def _update_thumbnail_highlights(self):
         """Update visual highlighting of selected/current pages"""

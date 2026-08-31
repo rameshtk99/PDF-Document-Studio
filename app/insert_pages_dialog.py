@@ -236,8 +236,14 @@ class InsertPagesDialog(tk.Toplevel):
             for idx, ref in enumerate(refs):
                 if generation != self._load_generation:
                     return  # a newer _load_source() superseded this run
+                # zoom=1.0 at this dpi -> ~204x264px for a Letter page,
+                # comfortably bigger than the _THUMB_MAX box below so
+                # .thumbnail() (shrink-only) actually downscales with
+                # real anti-aliasing instead of the render already being
+                # smaller than the box (leaving a tiny page floating in
+                # empty space).
                 img = PDFRenderer.render_page(ref.source_path, ref.source_index + 1,
-                                               dpi=24, zoom=0.2)
+                                               dpi=24, zoom=1.0)
                 if img is None:
                     img = PDFRenderer.create_placeholder_image(width=90, height=120,
                                                                  text=f"P{idx + 1}")
