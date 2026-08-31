@@ -8,6 +8,23 @@ import uuid
 
 
 @dataclass
+class PageRef:
+    """A single page's stable identity within a (possibly combined)
+    document -- decoupled from its current display position, which
+    changes on delete/move/insert. Points at wherever the page's actual
+    content lives (its own source PDF file + index within that file)
+    rather than duplicating the page's bytes, so combining pages from
+    another PDF costs only this small record, not a copy of that PDF.
+    """
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    source_path: str = ""   # PDF file this page's content comes from
+    source_index: int = 0   # 0-based page index within that file
+    width: float = 0.0      # PDF points -- cached from source metadata
+    height: float = 0.0
+    rotation: int = 0
+
+
+@dataclass
 class PageObject:
     """Represents an editable object on a page (image, text, watermark, etc.)"""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -72,6 +89,7 @@ class Document:
     def __init__(self, pdf_path: str):
         self.pdf_path = pdf_path
         self.page_count = 0
+        self.pages: List[PageRef] = []  # display order; source of truth for page identity/order
         self.page_configs: Dict[int, PageConfig] = {}
         self.global_settings = GlobalSettings()
         self.metadata: Dict[str, Any] = {}
@@ -132,6 +150,106 @@ class Document:
                     return obj
         return None
     
+    # ------------------------------------------------------------------ page management
+    #
+    # delete_page/move_page/insert_pages are the ONLY place page order
+    # changes. Every other subsystem (ImageManager, PageSettingsPanel,
+    # QuickFooterPanel, DocumentExporter's per-page loop) keeps using plain
+    # 1-indexed *display position* exactly as before -- these methods just
+    # make sure page_configs/PageObject.page_number are carried along to
+    # each page's new position instead of staying pinned to the old index.
+
+    def _renumber_page_configs(self, old_to_new: Dict[int, Optional[int]]):
+        """Rebuild page_configs with every key (and each contained
+        PageObject.page_number) remapped from old 1-indexed display
+        position to new, per old_to_new. A page mapped to None (deleted)
+        has its config dropped."""
+        new_configs: Dict[int, PageConfig] = {}
+        for old_num, cfg in self.page_configs.items():
+            new_num = old_to_new.get(old_num)
+            if new_num is None:
+                continue
+            cfg.page_number = new_num
+            for obj in cfg.objects:
+                obj.page_number = new_num
+            new_configs[new_num] = cfg
+        self.page_configs = new_configs
+
+    def delete_page(self, index: int) -> PageRef:
+        """Remove the page at 0-based `index`. Returns the removed PageRef
+        (callers needing undo should hold onto it, along with whatever
+        get_page_config(index+1) returned before calling this, since that
+        config is dropped here)."""
+        if not (0 <= index < len(self.pages)):
+            raise IndexError(f"Page index {index} out of range")
+        old_count = len(self.pages)
+        removed = self.pages.pop(index)
+        old_num = index + 1
+
+        old_to_new: Dict[int, Optional[int]] = {}
+        for i in range(1, old_count + 1):
+            if i < old_num:
+                old_to_new[i] = i
+            elif i == old_num:
+                old_to_new[i] = None
+            else:
+                old_to_new[i] = i - 1
+        self._renumber_page_configs(old_to_new)
+
+        self.page_count = len(self.pages)
+        self._modified = True
+        return removed
+
+    def move_page(self, from_index: int, to_index: int):
+        """Move the page at 0-based `from_index` to 0-based `to_index`,
+        shifting the pages in between and carrying every page's
+        config/objects along to its new position."""
+        n = len(self.pages)
+        if not (0 <= from_index < n) or not (0 <= to_index < n):
+            raise IndexError("Page index out of range")
+        if from_index == to_index:
+            return
+
+        ref = self.pages.pop(from_index)
+        self.pages.insert(to_index, ref)
+
+        old_num = from_index + 1
+        new_num = to_index + 1
+        old_to_new: Dict[int, int] = {}
+        for i in range(1, n + 1):
+            if i == old_num:
+                old_to_new[i] = new_num
+            elif from_index < to_index and old_num < i <= new_num:
+                old_to_new[i] = i - 1
+            elif from_index > to_index and new_num <= i < old_num:
+                old_to_new[i] = i + 1
+            else:
+                old_to_new[i] = i
+        self._renumber_page_configs(old_to_new)
+        self._modified = True
+
+    def insert_pages(self, at_index: int, refs: List[PageRef]):
+        """Insert `refs` starting at 0-based `at_index` (0 = before the
+        first page, len(self.pages) = after the last). Existing pages at
+        or after at_index shift right; their configs move with them. The
+        newly-inserted pages get no config (they fall back to global
+        settings, same as any page with no override)."""
+        if not refs:
+            return
+        n = len(self.pages)
+        at_index = max(0, min(at_index, n))
+        self.pages[at_index:at_index] = refs
+
+        shift = len(refs)
+        new_num_at = at_index + 1
+        old_to_new: Dict[int, int] = {}
+        for i in range(1, n + 1):
+            old_to_new[i] = i if i < new_num_at else i + shift
+        self._renumber_page_configs(old_to_new)
+
+        self.page_count = len(self.pages)
+        self._modified = True
+
     def is_modified(self) -> bool:
         """Check if document has unsaved changes"""
         return self._modified

@@ -165,10 +165,16 @@ def test_project_integrity_and_round_trip():
     """Validate project persistence and the document model remain consistent."""
     print_section("Test 4: Project Integrity")
 
-    from models.models import Document, PageConfig, FooterConfig, PageObject
+    from models.models import Document, PageConfig, FooterConfig, PageObject, PageRef
     from utils.project_manager import ProjectManager
 
     doc = Document(pdf_path="test2.pdf")
+    # Built by hand rather than via PDFLoader (which populates doc.pages
+    # itself) -- doc.pages must be populated to match page_count, the same
+    # invariant every real load path (PDFLoader, ProjectManager) upholds,
+    # since it's now the source of truth ProjectManager serializes.
+    doc.pages = [PageRef(source_path="test2.pdf", source_index=i, width=612, height=792)
+                 for i in range(2)]
     doc.page_count = 2
     page_cfg = PageConfig(page_number=0)
     page_cfg.footer_config = FooterConfig(

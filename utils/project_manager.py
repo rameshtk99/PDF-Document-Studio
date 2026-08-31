@@ -9,14 +9,27 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from models.models import Document, PageConfig, FooterConfig, PageObject, GlobalSettings
+from models.models import Document, PageConfig, FooterConfig, PageObject, GlobalSettings, PageRef
 from pdf.pdf_loader import PDFLoader
 
 
 class ProjectManager:
-    """Manages saving and loading projects in .pdfeditor format"""
-    
-    PROJECT_VERSION = "1.0"
+    """Manages saving and loading projects in .pdfeditor format
+
+    Version history:
+      1.0 -- original format: single pdf_path, page_configs, no page-order
+             manifest (page order/identity was implicit: 1..page_count of
+             pdf_path, always).
+      2.0 -- adds a 'pages' array (PageRef records: stable id, source
+             file, source index, dimensions) so a document whose pages
+             have been reordered/deleted/combined from another PDF saves
+             and reloads correctly. Additive: a 2.0 file is still valid
+             per the 1.x required fields, and a 1.0 file still loads --
+             _deserialize_document synthesizes 'pages' fresh from pdf_path
+             when it's absent.
+    """
+
+    PROJECT_VERSION = "2.0"
     FILE_EXTENSION = ".pdfeditor"
     
     def __init__(self, project_file: Optional[Path] = None):
@@ -138,14 +151,15 @@ class ProjectManager:
             Serialized document data
         """
         page_configs = {}
-        
+
         for page_idx, page_cfg in doc.page_configs.items():
             page_configs[str(page_idx)] = self._serialize_page_config(page_cfg)
-        
+
         return {
             'version': self.PROJECT_VERSION,
             'pdf_path': str(doc.pdf_path),
             'page_count': doc.page_count,
+            'pages': [self._serialize_page_ref(ref) for ref in doc.pages],
             'global_settings': self._serialize_global_settings(doc.global_settings),
             'page_configs': page_configs,
             'metadata': {
@@ -153,6 +167,17 @@ class ProjectManager:
                 'modified': datetime.now().isoformat(),
                 'version': self.PROJECT_VERSION
             }
+        }
+
+    @staticmethod
+    def _serialize_page_ref(ref: PageRef) -> Dict[str, Any]:
+        return {
+            'id': ref.id,
+            'source_path': ref.source_path,
+            'source_index': ref.source_index,
+            'width': ref.width,
+            'height': ref.height,
+            'rotation': ref.rotation,
         }
     
     def _serialize_page_config(self, page_cfg: PageConfig) -> Dict[str, Any]:
@@ -246,6 +271,17 @@ class ProjectManager:
             'allow_page_shrinking': settings.allow_page_shrinking
         }
     
+    @staticmethod
+    def _deserialize_page_ref(data: Dict[str, Any]) -> PageRef:
+        return PageRef(
+            id=data['id'],
+            source_path=data['source_path'],
+            source_index=data['source_index'],
+            width=data.get('width', 0.0),
+            height=data.get('height', 0.0),
+            rotation=data.get('rotation', 0),
+        )
+
     def _deserialize_document(self, data: Dict[str, Any]) -> Document:
         """
         Deserialize document from JSON data
@@ -264,7 +300,19 @@ class ProjectManager:
         document = Document(pdf_path=pdf_path)
         document.page_count = data.get('page_count', 0)
         document.metadata = data.get('metadata', {})
-        
+
+        pages_data = data.get('pages')
+        if pages_data:
+            # 2.0+ project: page order/identity/source was saved explicitly.
+            document.pages = [self._deserialize_page_ref(p) for p in pages_data]
+        else:
+            # 1.0 project: no manifest was ever saved -- synthesize one
+            # fresh from pdf_path (same one-file-in-original-order shape
+            # every 1.0 document always had; this is exactly what
+            # PDFLoader.load_pdf itself does for the primary document).
+            document.pages = PDFLoader.build_page_refs(pdf_path)
+        document.page_count = len(document.pages)
+
         # Restore global settings
         global_settings_data = data.get('global_settings', {})
         if global_settings_data:
@@ -362,10 +410,11 @@ class ProjectManager:
             if field not in data:
                 raise ValueError(f"Missing required field: {field}")
         
-        # Validate version compatibility
+        # Validate version compatibility -- 1.x (no 'pages' manifest) and
+        # 2.x (adds it) are both loadable; see _deserialize_document.
         version = data.get('version', '1.0')
         major, minor = version.split('.')[:2]
-        if major != '1':
+        if major not in ('1', '2'):
             raise ValueError(f"Unsupported project version: {version}")
     
     def is_modified(self) -> bool:

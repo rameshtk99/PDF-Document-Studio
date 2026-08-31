@@ -118,14 +118,36 @@ class DocumentExporter:
         doc = self.document
         PdfReader, PdfWriter, Transformation = _ensure_pypdf()
 
-        reader = PDFHandler.load_pdf(doc.pdf_path)
         writer = PdfWriter()
-        total = len(reader.pages)
+        total = len(doc.pages)
         result = ExportResult(output_path=output_path)
-        detector = WhiteSpaceDetector(doc.pdf_path)
 
-        for idx, page in enumerate(reader.pages):
-            page_num = idx + 1
+        # One reader/detector per distinct source file -- a combined
+        # document can draw pages from more than one PDF, but each source
+        # file is only ever opened/analyzed once regardless of how many
+        # of its pages ended up in the final document.
+        readers: Dict[str, object] = {}
+        detectors: Dict[str, WhiteSpaceDetector] = {}
+
+        def get_reader(path: str):
+            reader = readers.get(path)
+            if reader is None:
+                reader = PDFHandler.load_pdf(path)
+                readers[path] = reader
+            return reader
+
+        def get_detector(path: str) -> WhiteSpaceDetector:
+            detector = detectors.get(path)
+            if detector is None:
+                detector = WhiteSpaceDetector(path)
+                detectors[path] = detector
+            return detector
+
+        for idx, ref in enumerate(doc.pages):
+            page_num = idx + 1  # display position -- what footer config/reporting key on
+            src_reader = get_reader(ref.source_path)
+            page = src_reader.pages[ref.source_index]
+
             page_config = doc.get_page_config(page_num)
             footer_config = page_config.footer_config or FooterConfig()
             page_w, page_h = PDFHandler.get_page_dimensions(page)
@@ -138,9 +160,11 @@ class DocumentExporter:
 
             effective_bottom_margin = footer_config.bottom_margin
             if footer_items:
+                detector = get_detector(ref.source_path)
                 effective_bottom_margin = self._apply_whitespace_adjustment(
                     page, page_num, page_h, footer_config, page_config,
-                    doc, detector, Transformation, result
+                    doc, detector, Transformation, result,
+                    analysis_page_num=ref.source_index + 1,
                 )
 
             if footer_items or image_objects:
@@ -167,7 +191,8 @@ class DocumentExporter:
         return result
 
     def _apply_whitespace_adjustment(self, page, page_num, page_h, footer_config,
-                                      page_config, doc, detector, Transformation, result) -> float:
+                                      page_config, doc, detector, Transformation, result,
+                                      analysis_page_num=None) -> float:
         """Decide whether this page needs content compression to fit its footer.
 
         When the page already has enough white-space below its content the
@@ -180,14 +205,24 @@ class DocumentExporter:
         overlay is placed at the configured bottom_margin as normal. The
         overlay is appended after the transformed content stream, so it is
         never affected by the transform.
+
+        `page_num` is this page's *display* position (used for reporting
+        and the footer's own required-height math); `analysis_page_num` is
+        its 1-indexed position within its own *source* file, which is what
+        `detector` (scoped to that one source file) needs -- they diverge
+        once a page has come from a combined-in PDF. Defaults to page_num
+        for the common single-source case.
         """
+        if analysis_page_num is None:
+            analysis_page_num = page_num
+
         required_height = (footer_config.bottom_margin
                             + 2 * footer_config.font_size
                             + footer_config.line_gap
                             + SAFETY_GAP_PT
                             + FOOTER_PHYSICAL_MARGIN_PT)
 
-        analysis = detector.analyze_page(page_num)
+        analysis = detector.analyze_page(analysis_page_num)
 
         if analysis is None:
             result.per_page_notes[page_num] = (

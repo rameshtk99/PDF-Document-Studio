@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from app.undo_redo import Command
 from pdf.image_manager import ImageManager, ImagePlacement
-from models import Document, FooterConfig, PageConfig
+from models import Document, FooterConfig, PageConfig, PageRef
 
 
 class MoveObjectCommand(Command):
@@ -475,6 +475,98 @@ class ChangeGlobalFooterCommand(Command):
         self.document.page_configs.clear()
         self.document.page_configs.update(self.before_page_configs)
         self.document.set_modified(True)
+
+    def redo(self):
+        self.execute()
+
+
+# ---------------------------------------------------------------------------
+# Page management: delete / move / insert (combine). All three go through
+# Document.delete_page/move_page/insert_pages (models/models.py), which
+# already carry page_configs/PageObject.page_number to each page's new
+# position -- these commands just need to snapshot enough to reverse the
+# specific operation.
+
+class DeletePageCommand(Command):
+    """Delete the page at 0-based `index`. Undo re-inserts the exact same
+    PageRef (same stable id) at the same position and restores whatever
+    PageConfig (footer/objects) it had, if any."""
+
+    def __init__(self, document: Document, index: int):
+        super().__init__()
+        self.document = document
+        self.index = index
+        self.affects_page_structure = True  # editor_window's undo/redo refreshes viewer layout/thumbnails when set
+        self._removed_ref: Optional[PageRef] = None
+        self._removed_config: Optional[PageConfig] = None
+        self.description = f"Delete page {index + 1}"
+
+    def execute(self):
+        page_num = self.index + 1
+        self._removed_config = self.document.page_configs.get(page_num)
+        self._removed_ref = self.document.delete_page(self.index)
+
+    def undo(self):
+        if self._removed_ref is None:
+            return
+        self.document.insert_pages(self.index, [self._removed_ref])
+        if self._removed_config is not None:
+            self.document.set_page_config(self.index + 1, self._removed_config)
+        self._removed_ref = None
+        self._removed_config = None
+
+    def redo(self):
+        self.execute()
+
+
+class MovePageCommand(Command):
+    """Move the page at 0-based `from_index` to 0-based `to_index`. Its
+    own inverse with the indices swapped -- moving A->B then B->A always
+    restores the original order exactly."""
+
+    def __init__(self, document: Document, from_index: int, to_index: int):
+        super().__init__()
+        self.document = document
+        self.from_index = from_index
+        self.to_index = to_index
+        self.affects_page_structure = True
+        self.description = f"Move page {from_index + 1} to position {to_index + 1}"
+
+    def execute(self):
+        self.document.move_page(self.from_index, self.to_index)
+
+    def undo(self):
+        self.document.move_page(self.to_index, self.from_index)
+
+    def redo(self):
+        self.execute()
+
+
+class InsertPagesCommand(Command):
+    """Insert `refs` (PageRef list, e.g. from PDFLoader.build_page_refs)
+    starting at 0-based `at_index`. Undo removes exactly the pages that
+    were inserted, matched by their stable id -- correct even though
+    their display position may have shifted from where they were first
+    inserted, as long as this is undone in the normal linear undo order
+    (any edits made to the new pages in between are undone first, by the
+    commands that made them, before this one is reached)."""
+
+    def __init__(self, document: Document, at_index: int, refs: List[PageRef]):
+        super().__init__()
+        self.document = document
+        self.at_index = at_index
+        self.refs = list(refs)
+        self._ref_ids = {r.id for r in self.refs}
+        self.affects_page_structure = True
+        self.description = f"Insert {len(self.refs)} page(s) at position {at_index + 1}"
+
+    def execute(self):
+        self.document.insert_pages(self.at_index, self.refs)
+
+    def undo(self):
+        indices = [i for i, ref in enumerate(self.document.pages) if ref.id in self._ref_ids]
+        for idx in reversed(indices):
+            self.document.delete_page(idx)
 
     def redo(self):
         self.execute()

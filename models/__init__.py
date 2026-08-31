@@ -3,6 +3,7 @@ Data models for PDF Editor
 """
 
 from models.models import (
+    PageRef,
     PageObject,
     FooterConfig,
     PageConfig,
@@ -11,6 +12,7 @@ from models.models import (
 )
 
 __all__ = [
+    'PageRef',
     'PageObject',
     'FooterConfig',
     'PageConfig',

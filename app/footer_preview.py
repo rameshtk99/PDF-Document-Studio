@@ -8,23 +8,27 @@ content-relative bottom-margin logic as DocumentExporter
 what export would actually produce -- without writing anything to disk.
 
 By default (no active "draft"), redraw() shows whatever footer is
-already committed to the Document for the visible page
-(document.get_page_config(page).footer_config). While the user is
-actively typing in a footer panel, that panel pushes a temporary
-"draft" override via set_draft() so they see their in-progress edit
-live; clearing the draft (on Apply, on page change, or after an
-undo/redo) falls back to showing the real, currently-committed state
-again.
+already committed to the Document for each currently-visible page
+(document.get_page_config(page).footer_config) -- every page that has a
+rendered bitmap on screen right now, not just pdf_viewer.current_page,
+so a page's footer doesn't disappear just because continuous scroll
+made a neighboring page "current" instead. While the user is actively
+typing in a footer panel, that panel pushes a temporary "draft" override
+via set_draft() so they see their in-progress edit live on the specific
+page it applies to; clearing the draft (on Apply, on page change, or
+after an undo/redo) falls back to showing the real, currently-committed
+state again.
 """
 
 import tkinter as tk
 import tkinter.font as tkFont
-from typing import Optional
+from typing import Dict, Optional
 
 from models import FooterConfig
 from pdf.white_space_detector import WhiteSpaceDetector
 from pdf.document_exporter import (compute_content_relative_bottom_margin,
                                     SAFETY_GAP_PT, FOOTER_PHYSICAL_MARGIN_PT)
+from viewer.pdf_viewer import _resolve_page_source
 
 
 class FooterPreviewController:
@@ -32,8 +36,10 @@ class FooterPreviewController:
         self.pdf_viewer = pdf_viewer
         self.draft_config: Optional[FooterConfig] = None
         self.draft_page: Optional[int] = None
-        self._detector: Optional[WhiteSpaceDetector] = None
-        self._detector_path: Optional[str] = None
+        # One WhiteSpaceDetector per distinct source file encountered (a
+        # combined document can have pages from more than one), rather
+        # than a single detector reused for the wrong file.
+        self._detectors: Dict[str, WhiteSpaceDetector] = {}
 
     def set_draft(self, footer_config: FooterConfig, page_number: int):
         self.draft_config = footer_config
@@ -53,18 +59,24 @@ class FooterPreviewController:
         if not doc:
             return
 
-        current_page = self.pdf_viewer.current_page
-        if self.draft_config is not None and self.draft_page == current_page:
+        for page_num in self.pdf_viewer.get_rendered_page_numbers():
+            self._draw_page_footer(doc, page_num, canvas)
+
+    def _draw_page_footer(self, doc, page_num: int, canvas):
+        if self.draft_config is not None and self.draft_page == page_num:
             cfg = self.draft_config
         else:
-            cfg = doc.get_page_config(current_page).footer_config
+            cfg = doc.get_page_config(page_num).footer_config
 
         if not cfg or not cfg.enabled:
             return
 
-        scale = self.pdf_viewer.get_page_to_screen_scale()
-        page_h = self.pdf_viewer.get_current_page_height_pt()
-        page_w = self._current_page_width_pt()
+        render_info = self.pdf_viewer.get_page_render_info(page_num)
+        if not render_info:
+            return
+        scale = render_info['scale']
+        page_h = render_info['height_pt']
+        page_w = self._page_width_pt(doc, page_num)
         if not scale or not page_h or not page_w:
             return
 
@@ -80,8 +92,8 @@ class FooterPreviewController:
 
         total_pages = doc.page_count
         resolved_items = [
-            (l1.replace("{page}", str(current_page)).replace("{total}", str(total_pages)),
-             l2.replace("{page}", str(current_page)).replace("{total}", str(total_pages)))
+            (l1.replace("{page}", str(page_num)).replace("{total}", str(total_pages)),
+             l2.replace("{page}", str(page_num)).replace("{total}", str(total_pages)))
             for l1, l2 in footer_items
         ]
 
@@ -97,11 +109,11 @@ class FooterPreviewController:
         fitted_size_pt = (fitted_size_px / scale) if scale else cfg.font_size
 
         bottom_margin, will_compress = self._effective_bottom_margin(
-            doc, current_page, page_h, cfg, fitted_size_pt)
+            doc, page_num, page_h, cfg, fitted_size_pt)
         y_line2 = bottom_margin + fitted_size_pt
         y_line1 = y_line2 + fitted_size_pt + cfg.line_gap
 
-        off_x, off_y = self.pdf_viewer.get_render_offset()
+        off_x, off_y = render_info['offset']
         font_obj = self._resolve_font(cfg.font_name, fitted_size_px)
 
         for i, (line1, line2) in enumerate(resolved_items):
@@ -154,7 +166,7 @@ class FooterPreviewController:
             size -= 1
         return min_size_px
 
-    def _effective_bottom_margin(self, doc, page_number: int, page_h: float,
+    def _effective_bottom_margin(self, doc, page_num: int, page_h: float,
                                   cfg: FooterConfig,
                                   rendered_font_size_pt: float) -> tuple:
         """Return (renderer_bottom_margin, will_compress).
@@ -165,8 +177,9 @@ class FooterPreviewController:
             caller can draw a warning indicator in the preview.
         """
         try:
-            detector = self._get_detector(doc.pdf_path)
-            analysis = detector.analyze_page(page_number)
+            src_path, src_page_num = _resolve_page_source(doc, page_num)
+            detector = self._get_detector(src_path)
+            analysis = detector.analyze_page(src_page_num)
         except Exception:
             analysis = None
 
@@ -186,10 +199,11 @@ class FooterPreviewController:
         return margin, False
 
     def _get_detector(self, pdf_path: str) -> WhiteSpaceDetector:
-        if self._detector is None or self._detector_path != pdf_path:
-            self._detector = WhiteSpaceDetector(pdf_path)
-            self._detector_path = pdf_path
-        return self._detector
+        detector = self._detectors.get(pdf_path)
+        if detector is None:
+            detector = WhiteSpaceDetector(pdf_path)
+            self._detectors[pdf_path] = detector
+        return detector
 
     @staticmethod
     def _resolve_font(font_name: str, size_px: int) -> tkFont.Font:
@@ -199,12 +213,10 @@ class FooterPreviewController:
         except tk.TclError:
             return tkFont.Font(family='Helvetica', size=size_px)
 
-    def _current_page_width_pt(self) -> Optional[float]:
-        doc = self.pdf_viewer.document
-        if not doc or not doc.metadata:
-            return None
-        pages = doc.metadata.get('pages', [])
-        idx = self.pdf_viewer.current_page - 1
+    @staticmethod
+    def _page_width_pt(doc, page_num: int) -> Optional[float]:
+        pages = doc.pages
+        idx = page_num - 1
         if 0 <= idx < len(pages):
-            return pages[idx]['width']
+            return pages[idx].width
         return None

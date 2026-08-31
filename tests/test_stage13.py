@@ -138,7 +138,7 @@ def test_save_and_load_project():
             # Verify JSON format
             with open(project_file, 'r') as f:
                 data = json.load(f)
-            assert data['version'] == '1.0', "Version not in file"
+            assert data['version'] == ProjectManager.PROJECT_VERSION, "Version not in file"
             assert 'pdf_path' in data, "PDF path not in file"
             assert 'page_configs' in data, "Page configs not in file"
             print(f"✓ JSON format valid")
@@ -297,7 +297,7 @@ def test_project_validation():
             # Test 3: Invalid version
             bad_version_file = Path(tmpdir) / "badver.pdfeditor"
             bad_ver_data = {
-                'version': '2.0',  # Unsupported version
+                'version': '99.0',  # Unsupported version (1.x and 2.x are both valid)
                 'pdf_path': 'test.pdf',
                 'page_count': 1,
                 'page_configs': {}

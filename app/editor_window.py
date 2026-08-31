@@ -2,12 +2,13 @@
 PDF Document Studio -- the real, wired-together GUI.
 
 Composes the previously-isolated Phase 1 building blocks into one working
-window: PDFViewerWidget (thumbnails + canvas + zoom/nav), PageSettingsPanel
-+ QuickFooterPanel (per-page vs flat-same-everywhere footer editing, as
-tabs docked right next to the live preview), ImageOverlayController +
-ImagePropertiesPanel (interactive image placement), UndoRedoManager (real
-Ctrl+Z/Ctrl+Y), ProjectManager (.pdfeditor save/load), and DocumentExporter
-(real, per-page, white-space-aware PDF output).
+window: PDFViewerWidget (thumbnails + canvas + zoom/nav), QuickFooterPanel
+(flat, same-footer-everywhere editing) + ToolsPanel (compress/add image-
+stamp/insert-pages/export) as tabs docked right next to the live preview,
+ImageOverlayController + ImagePropertiesPanel (interactive image
+placement), UndoRedoManager (real Ctrl+Z/Ctrl+Y), ProjectManager
+(.pdfeditor save/load), and DocumentExporter (real, per-page,
+white-space-aware PDF output).
 
 CLI (batch/cli.py) and the legacy flat FooterApp are untouched -- this
 module only changes what `python main.py` launches by default. The
@@ -28,14 +29,18 @@ from pdf import PDFLoader, ImageManager, ImagePlacement, DocumentExporter
 from viewer import PDFViewerWidget
 from utils.project_manager import ProjectManager
 from utils.constants import PROJECT_ROOT
+from utils.ui_helpers import center_window
 
-from app.page_settings import PageSettingsPanel
+from app.tools_panel import ToolsPanel
 from app.quick_footer_panel import QuickFooterPanel
 from app.image_editor import ImageEditor
 from app.undo_redo import UndoRedoManager
-from app.document_commands import AddObjectCommand
+from app.document_commands import (
+    AddObjectCommand, DeletePageCommand, MovePageCommand, InsertPagesCommand,
+)
 from app.image_overlay import ImageOverlayController, ImagePropertiesPanel
 from app.compress_dialog import CompressDialog
+from app.insert_pages_dialog import InsertPagesDialog
 from app.footer_preview import FooterPreviewController
 
 _FIELDS_THAT_EDIT_TEXT = ('Entry', 'TEntry', 'TCombobox', 'Spinbox', 'Text')
@@ -97,6 +102,7 @@ class PDFEditorApp:
 
         insert_menu = tk.Menu(menubar, tearoff=0)
         insert_menu.add_command(label="Add Image / Stamp...", command=self.add_image)
+        insert_menu.add_command(label="Insert Page(s) from PDF...", command=self.insert_pages_from_pdf)
         menubar.add_cascade(label="Insert", menu=insert_menu)
 
         tools_menu = tk.Menu(menubar, tearoff=0)
@@ -138,7 +144,9 @@ class PDFEditorApp:
         content.grid(row=1, column=0, sticky='nsew')
 
         self.pdf_viewer = PDFViewerWidget(
-            content, on_page_changed=self._on_page_changed, on_after_render=self._on_after_render
+            content, on_page_changed=self._on_page_changed, on_after_render=self._on_after_render,
+            on_page_action=self._on_page_action,
+            on_page_reorder=self._execute_move_page,
         )
         content.add(self.pdf_viewer, stretch="always", width=850)
 
@@ -159,13 +167,14 @@ class PDFEditorApp:
         self.quick_footer_panel.get_current_page = lambda: self.pdf_viewer.current_page
         self.side_notebook.add(self.quick_footer_panel, text="Quick Footer")
 
-        self.page_settings_panel = PageSettingsPanel(
-            self.side_notebook, undo_manager=self.undo_manager,
-            on_settings_changed=self._on_footer_settings_changed,
-            on_export_requested=self.export_pdf,
-            on_preview_changed=self._on_footer_preview_changed,
+        self.tools_panel = ToolsPanel(
+            self.side_notebook,
+            on_compress=self.compress_pdf,
+            on_add_image=self.add_image,
+            on_insert_pages=self.insert_pages_from_pdf,
+            on_export=self.export_pdf,
         )
-        self.side_notebook.add(self.page_settings_panel, text="Page Settings")
+        self.side_notebook.add(self.tools_panel, text="Tools")
 
         self.image_overlay = ImageOverlayController(
             self.pdf_viewer, self.image_manager, self.image_editor, self.undo_manager,
@@ -250,7 +259,6 @@ class PDFEditorApp:
         self.footer_preview.clear_draft()
 
         self.pdf_viewer.load_document(document)
-        self.page_settings_panel.load_document(document)
         self.quick_footer_panel.load_document(document)
         self.image_properties.set_manager_context(self.image_manager, self.pdf_viewer.current_page)
         self.image_overlay.select(None)
@@ -397,11 +405,84 @@ class PDFEditorApp:
             pass
         messagebox.showerror("Compress PDF", message)
 
+    # ---- page management (delete / move / insert / combine) -----------------
+
+    def _on_page_action(self, action: str, page_num: int):
+        """Dispatch for ThumbnailPanel's right-click page menu -- see
+        ThumbnailPanel.__init__'s on_page_action docstring for the
+        (action, page_num) contract."""
+        if not self.document:
+            return
+        if action == 'move_up':
+            self._execute_move_page(page_num, page_num - 1)
+        elif action == 'move_down':
+            self._execute_move_page(page_num, page_num + 1)
+        elif action == 'delete':
+            self._confirm_and_delete_page(page_num)
+        elif action == 'insert_before':
+            self._open_insert_pages_dialog(at_page=page_num)
+        elif action == 'insert_after':
+            self._open_insert_pages_dialog(at_page=page_num + 1)
+
+    def _execute_move_page(self, from_page: int, to_page: int):
+        if not self.document or not (1 <= to_page <= self.document.page_count):
+            return  # already at a boundary -- context menu disables these, but stay safe
+        self.undo_manager.execute(MovePageCommand(self.document, from_page - 1, to_page - 1))
+        self.document.set_modified(True)
+        self._refresh_after_page_ops(target_page=to_page)
+
+    def _confirm_and_delete_page(self, page_num: int):
+        if not self.document:
+            return
+        if self.document.page_count <= 1:
+            messagebox.showwarning("Delete Page", "Cannot delete the only page in the document.")
+            return
+        if not messagebox.askyesno(
+                "Delete Page", f"Delete page {page_num}?\n\nYou can undo this with Ctrl+Z."):
+            return
+        self.undo_manager.execute(DeletePageCommand(self.document, page_num - 1))
+        self.document.set_modified(True)
+        self._refresh_after_page_ops(target_page=min(page_num, self.document.page_count))
+
+    def insert_pages_from_pdf(self):
+        """Insert menu entry point -- no specific position known yet
+        (unlike the context menu's Insert Before/After), so default to
+        right after whichever page is currently in view."""
+        if not self.document:
+            messagebox.showwarning("Insert Pages", "Open a PDF first.")
+            return
+        self._open_insert_pages_dialog(at_page=self.pdf_viewer.current_page + 1)
+
+    def _open_insert_pages_dialog(self, at_page: int):
+        """at_page is the 1-indexed display position the newly-inserted
+        pages should end up occupying."""
+        def on_insert(refs):
+            if not refs or not self.document:
+                return
+            self.undo_manager.execute(InsertPagesCommand(self.document, at_page - 1, refs))
+            self.document.set_modified(True)
+            self._refresh_after_page_ops(target_page=at_page)
+        InsertPagesDialog(self.root, on_insert=on_insert)
+
+    def _refresh_after_page_ops(self, target_page: int):
+        """Common refresh after any page delete/move/insert: reload the
+        viewer's continuous-scroll layout + thumbnails from the (already
+        mutated) document.pages, land on target_page, and make sure every
+        side panel (Page Settings, image selection, footer preview) drops
+        anything tied to the old page arrangement."""
+        if not self.document:
+            return
+        target_page = max(1, min(target_page, self.document.page_count))
+        self.pdf_viewer.current_page = target_page
+        self.pdf_viewer.refresh_after_page_ops(target_page)
+        self._on_page_changed(target_page)
+
     def open_classic_tool(self):
         from app.gui_app import FooterApp
         top = tk.Toplevel(self.root)
         self._set_window_icon(top)
-        FooterApp(top)
+        FooterApp(top)  # sets top's own geometry ("800x600") as part of building its UI
+        center_window(top, self.root, 800, 600)
 
     @staticmethod
     def _set_window_icon(window):
@@ -521,7 +602,6 @@ class PDFEditorApp:
     # ---- callbacks ----------------------------------------------------------
 
     def _on_page_changed(self, page_num: int):
-        self.page_settings_panel.set_current_page(page_num)
         self.image_properties.set_manager_context(self.image_manager, page_num)
         self.image_overlay.on_page_changed(page_num)
         # A draft belongs to the page it was being typed for; switching
@@ -540,11 +620,6 @@ class PDFEditorApp:
         else:
             self.footer_preview.set_draft(draft_config, page_number)
 
-    def _on_footer_settings_changed(self):
-        if self.document:
-            self.document.set_modified(True)
-        self._update_status()
-
     def _on_image_selection_changed(self, image_id: Optional[str]):
         if image_id:
             self.image_properties.set_manager_context(self.image_manager, self.pdf_viewer.current_page)
@@ -557,20 +632,28 @@ class PDFEditorApp:
     def undo(self):
         cmd = self.undo_manager.undo()
         if cmd:
-            self._refresh_after_undo_redo()
+            self._refresh_after_undo_redo(cmd)
 
     def redo(self):
         cmd = self.undo_manager.redo()
         if cmd:
-            self._refresh_after_undo_redo()
+            self._refresh_after_undo_redo(cmd)
 
-    def _refresh_after_undo_redo(self):
+    def _refresh_after_undo_redo(self, cmd=None):
+        # Page delete/move/insert change the page collection itself (count,
+        # order, which source each page renders from) -- the viewer's
+        # layout/thumbnails must be rebuilt from the document, not just
+        # have their overlays redrawn, or they'd keep showing stale pages.
+        if cmd is not None and getattr(cmd, 'affects_page_structure', False):
+            target = max(1, min(self.pdf_viewer.current_page, self.document.page_count))
+            self.pdf_viewer.current_page = target
+            self.pdf_viewer.refresh_after_page_ops(target)
+
         self.image_overlay.redraw()
         # Any in-progress typing draft is now stale relative to the
         # (just-changed) document state -- drop it so the preview falls
         # back to showing the real, current footer.
         self.footer_preview.clear_draft()
-        self.page_settings_panel.set_current_page(self.page_settings_panel.get_current_page())
         self.quick_footer_panel.sync_from_document()
         self._update_status()
 

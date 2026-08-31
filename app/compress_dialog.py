@@ -12,6 +12,7 @@ from tkinter import ttk, filedialog, messagebox
 from typing import Optional
 
 from pdf import PDFCompressor, CompressionMode
+from utils.ui_helpers import center_window
 
 _SIZE_PRESETS = [
     ("Maximum 5 MB", 5.0),
@@ -43,8 +44,9 @@ class CompressDialog(tk.Toplevel):
         """
         super().__init__(parent)
         self.title("Compress PDF")
-        self.geometry("500x520")
-        self.resizable(False, False)
+        center_window(self, parent, 500, 520)
+        self.resizable(True, True)
+        self.minsize(420, 380)
         self.transient(parent)
 
         self._compressing = False
@@ -55,6 +57,14 @@ class CompressDialog(tk.Toplevel):
 
     def _build_ui(self, current_pdf_path):
         pad = dict(padx=10, pady=6)
+
+        # Only the result-summary row grows when the dialog is resized (or
+        # shrunk to fit a small screen -- see center_window's clamping);
+        # everything else, including the button row, keeps its natural
+        # size so Compress/Close never get squeezed off-screen the way
+        # the Insert-Pages dialog's button bar could.
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(6, weight=1)  # row 6 = result_text
 
         tk.Label(self, text="Input PDF:").grid(row=0, column=0, sticky='w', **pad)
         self.input_var = tk.StringVar(value=current_pdf_path or "")
@@ -130,7 +140,7 @@ class CompressDialog(tk.Toplevel):
         self.progress.grid(row=5, column=0, columnspan=3, padx=10, pady=(0, 6))
 
         self.result_text = tk.Text(self, height=9, width=58, state=tk.DISABLED, bg='#f5f5f5')
-        self.result_text.grid(row=6, column=0, columnspan=3, padx=10, pady=6)
+        self.result_text.grid(row=6, column=0, columnspan=3, sticky='nsew', padx=10, pady=6)
 
         btns = tk.Frame(self)
         btns.grid(row=7, column=0, columnspan=3, pady=8)
@@ -258,6 +268,15 @@ class CompressDialog(tk.Toplevel):
             f"Output:           {result.output_path}"
         )
         self._set_result_text(summary)
+
+        # An explicit "done, click OK" moment -- leaving the dialog sitting
+        # open afterward (as before) read as ambiguous/still-in-progress.
+        # Closing it here, but only on success: a failed run should stay
+        # open so the user can adjust settings and retry. _on_close()
+        # (not a bare destroy()) so the "Compress PDF" button flow's
+        # throwaway temp input file still gets cleaned up.
+        messagebox.showinfo("Compression Complete", summary)
+        self._on_close()
 
     def _set_result_text(self, text: str):
         self.result_text.config(state=tk.NORMAL)

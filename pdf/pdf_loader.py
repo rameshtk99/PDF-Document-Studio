@@ -12,13 +12,43 @@ Handles:
 
 import os
 from typing import Optional, List, Dict, Any
-from models import Document, PageConfig, FooterConfig
+from models import Document, PageRef
 from pdf import PDFHandler
 
 
 class PDFLoader:
     """Load PDF files and extract metadata"""
-    
+
+    @staticmethod
+    def build_page_refs(pdf_path: str, reader=None) -> List[PageRef]:
+        """Read a PDF's page count/dimensions only (no page content) and
+        return one PageRef per page, pointing at pdf_path. Used both by
+        load_pdf (for the primary document) and by the Insert-Pages-From-PDF
+        dialog (for a secondary document being combined in) -- this is
+        metadata-only work, the same low cost as opening any PDF, and never
+        copies page bytes: the PageRef just remembers where to read them
+        from later (render/export time), which is what keeps combining
+        pages from another PDF lightweight.
+
+        Args:
+            reader: an already-open PdfReader for pdf_path, to avoid
+                re-parsing the same file twice when the caller already has
+                one open (e.g. load_pdf).
+        """
+        if reader is None:
+            reader = PDFHandler.load_pdf(pdf_path)
+        refs = []
+        for idx, page in enumerate(reader.pages):
+            try:
+                width, height = PDFHandler.get_page_dimensions(page)
+                rotation = int(page.get('/Rotate', 0) or 0)
+            except Exception as e:
+                print(f"Warning: Could not extract metadata for page {idx + 1} of {pdf_path}: {e}")
+                width, height, rotation = 612, 792, 0
+            refs.append(PageRef(source_path=pdf_path, source_index=idx,
+                                 width=width, height=height, rotation=rotation))
+        return refs
+
     @staticmethod
     def validate_pdf(pdf_path: str) -> tuple[bool, Optional[str]]:
         """
@@ -67,49 +97,27 @@ class PDFLoader:
         
         # Create document
         doc = Document(pdf_path)
-        
+
         try:
-            # Load PDF reader
             reader = PDFHandler.load_pdf(pdf_path)
-            
-            # Extract page count
-            doc.page_count = len(reader.pages)
-            
-            # Extract per-page metadata
-            page_dimensions = []
-            for idx, page in enumerate(reader.pages):
-                page_num = idx + 1
-                
-                try:
-                    width, height = PDFHandler.get_page_dimensions(page)
-                    rotation = page.get('/Rotate', 0)
-                    
-                    page_dims = {
-                        'page_number': page_num,
-                        'width': width,
-                        'height': height,
-                        'rotation': rotation,
-                        'aspect_ratio': width / height if height > 0 else 1.0
-                    }
-                    page_dimensions.append(page_dims)
-                    
-                    # Initialize default page config
-                    page_config = PageConfig(page_number=page_num)
-                    page_config.footer_config = FooterConfig(
-                        enabled=doc.global_settings.footer_config.enabled,
-                        text_columns=doc.global_settings.footer_config.text_columns.copy()
-                    )
-                except Exception as e:
-                    print(f"Warning: Could not extract metadata for page {page_num}: {e}")
-                    page_dims = {
-                        'page_number': page_num,
-                        'width': 612,  # Default 8.5x11
-                        'height': 792,
-                        'rotation': 0,
-                        'aspect_ratio': 612/792
-                    }
-                    page_dimensions.append(page_dims)
-            
+
+            # Page identity + dimensions -- single source of truth for both
+            # doc.pages (page management) and doc.metadata['pages'] (kept
+            # in sync below for every existing reader that expects it).
+            doc.pages = PDFLoader.build_page_refs(pdf_path, reader=reader)
+            doc.page_count = len(doc.pages)
+
+            page_dimensions = [
+                {
+                    'page_number': i + 1,
+                    'width': ref.width,
+                    'height': ref.height,
+                    'rotation': ref.rotation,
+                    'aspect_ratio': (ref.width / ref.height) if ref.height > 0 else 1.0,
+                }
+                for i, ref in enumerate(doc.pages)
+            ]
+
             # Store metadata
             doc.metadata = {
                 'file_path': pdf_path,
@@ -119,7 +127,7 @@ class PDFLoader:
                 'pages': page_dimensions,
                 'is_encrypted': False,  # TODO: Check if encrypted
             }
-            
+
             # Extract global metadata if available
             try:
                 if hasattr(reader, 'metadata') and reader.metadata:
