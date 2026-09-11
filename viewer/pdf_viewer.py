@@ -12,13 +12,16 @@ Provides an embedded PDF viewer with:
 
 import bisect
 import tkinter as tk
-from tkinter import messagebox
 from typing import Optional, Callable, List, Dict, Set, Tuple
 import threading
+import customtkinter as ctk
 import PIL.Image
 import PIL.ImageTk
 from viewer.pdf_renderer import PDFRenderer
 from models import Document
+from utils import ui_theme, icons
+from utils.widgets import create_icon_button, create_button, vertical_separator, empty_state
+from utils.tooltip import attach as attach_tooltip
 
 
 def _resolve_page_source(document: Document, page_num: int) -> Tuple[str, int]:
@@ -50,7 +53,8 @@ class ThumbnailPanel(tk.Frame):
                  on_page_selected: Optional[Callable] = None,
                  on_scroll_page_changed: Optional[Callable[[int], None]] = None,
                  on_page_action: Optional[Callable[[str, int], None]] = None,
-                 on_page_reorder: Optional[Callable[[int, int], None]] = None, **kwargs):
+                 on_page_reorder: Optional[Callable[[int, int], None]] = None,
+                 on_collapse_requested: Optional[Callable[[], None]] = None, **kwargs):
         """
         Initialize thumbnail panel
 
@@ -72,6 +76,9 @@ class ThumbnailPanel(tk.Frame):
                 fired when a thumbnail is dragged and dropped onto a new
                 position. Separate from on_page_action since it carries
                 two page numbers instead of one.
+            on_collapse_requested: Optional callback() for the header's
+                "hide this panel" chevron. When omitted the chevron isn't
+                shown at all, so the panel stays usable standalone.
             **kwargs: Additional frame arguments
         """
         super().__init__(parent, **kwargs)
@@ -81,12 +88,17 @@ class ThumbnailPanel(tk.Frame):
         self.on_scroll_page_changed = on_scroll_page_changed
         self.on_page_action = on_page_action
         self.on_page_reorder = on_page_reorder
+        self.on_collapse_requested = on_collapse_requested
         self.current_page = 1
         self.selected_pages: Set[int] = set()
         self.thumbnail_buttons: Dict[int, tk.Button] = {}
         self.thumbnail_frames: Dict[int, tk.Frame] = {}
+        self.thumbnail_labels: Dict[int, tk.Label] = {}
+        self.thumbnail_indicators: Dict[int, tk.Frame] = {}
+        self.thumbnail_bodies: Dict[int, tk.Frame] = {}
         self.thumbnail_images: Dict[int, PIL.ImageTk.PhotoImage] = {}
         self.last_selected_page = 1
+        self._hovered_page: Optional[int] = None
 
         # Drag-to-reorder state
         self._drag_page: Optional[int] = None
@@ -115,49 +127,76 @@ class ThumbnailPanel(tk.Frame):
         # one's dicts once a newer load has started.
         self._load_generation = 0
 
-        self.config(bg='lightgray', width=150)
+        self.config(bg=ui_theme.resolve(ui_theme.BG_SIDEBAR), width=150)
         self.pack_propagate(False)
 
         self._init_ui()
-    
-    def _init_ui(self):
-        """Initialize the thumbnail panel UI"""
-        # Header
-        header = tk.Frame(self, bg='darkgray')
-        header.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
 
-        tk.Label(header, text="Pages", bg='darkgray', fg='white',
-                font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
+    def _init_ui(self):
+        """Initialize the thumbnail panel UI. The header/toolbar/hint
+        chrome below is styled with customtkinter for the modern look;
+        the canvas-based scroll area and everything drag/animation-
+        related stays plain tkinter (self.canvas, self.thumbnails_frame,
+        the drag-ghost Toplevel, slide-to-gap animation) -- deliberately
+        untouched, see the class docstring's drag-to-reorder section."""
+        sidebar_bg = ui_theme.resolve(ui_theme.BG_SIDEBAR)
+
+        # Header -- title + live page count, per the "Pages [count]" spec.
+        header = ctk.CTkFrame(self, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=32)
+        header.pack(side=tk.TOP, fill=tk.X)
+        header.pack_propagate(False)
+        ctk.CTkLabel(header, text="Pages", font=ui_theme.font(12, "bold"),
+                     text_color=ui_theme.TEXT_PRIMARY).pack(side=tk.LEFT, padx=(10, 4))
+        self.page_count_badge = ctk.CTkLabel(
+            header, text="0", font=ui_theme.font(10, "bold"), text_color=ui_theme.TEXT_SECONDARY,
+            fg_color=ui_theme.BG_SUBTLE, corner_radius=8, width=20, height=18)
+        self.page_count_badge.pack(side=tk.LEFT)
+
+        if self.on_collapse_requested:
+            create_icon_button(header, "chevron_left", command=self.on_collapse_requested,
+                                tooltip="Hide pages panel", size=13, width=24, height=24,
+                                variant="tertiary").pack(side=tk.RIGHT, padx=(0, 6))
 
         # Page-action toolbar -- visible (not just right-click-only)
         # Move Up/Down/Insert/Delete for whichever page is currently
         # selected, using the exact same on_page_action contract the
         # right-click menu uses.
-        actions_bar = tk.Frame(self, bg='lightgray')
-        actions_bar.pack(side=tk.TOP, fill=tk.X, padx=2, pady=(2, 0))
-        icon_font = ('Segoe UI Symbol', 9)
-        tk.Button(actions_bar, text="▲", font=icon_font, width=3,
-                  command=lambda: self._fire_toolbar_action('move_up')
-                  ).pack(side=tk.LEFT, padx=1)
-        tk.Button(actions_bar, text="▼", font=icon_font, width=3,
-                  command=lambda: self._fire_toolbar_action('move_down')
-                  ).pack(side=tk.LEFT, padx=1)
-        tk.Button(actions_bar, text="+", font=icon_font, width=3,
-                  command=self._show_insert_menu
-                  ).pack(side=tk.LEFT, padx=1)
-        tk.Button(actions_bar, text="\U0001F5D1", font=icon_font, width=3,
-                  command=lambda: self._fire_toolbar_action('delete')
-                  ).pack(side=tk.LEFT, padx=1)
-        tk.Label(self, text="Right-click a page, or drag to reorder",
-                 bg='lightgray', fg='gray30', font=('Arial', 7), wraplength=140,
-                 justify=tk.LEFT).pack(side=tk.TOP, fill=tk.X, padx=4, pady=(2, 4))
+        actions_bar = ctk.CTkFrame(self, fg_color=ui_theme.BG_SURFACE, corner_radius=0)
+        actions_bar.pack(side=tk.TOP, fill=tk.X)
+        inner_actions = ctk.CTkFrame(actions_bar, fg_color="transparent")
+        inner_actions.pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        # Scrollbar
-        scrollbar = tk.Scrollbar(self, orient=tk.VERTICAL)
+        create_icon_button(inner_actions, "move_up", command=lambda: self._fire_toolbar_action('move_up'),
+                            tooltip="Move page up", size=13, width=26, height=24
+                            ).pack(side=tk.LEFT, padx=(0, 2))
+        create_icon_button(inner_actions, "move_down", command=lambda: self._fire_toolbar_action('move_down'),
+                            tooltip="Move page down", size=13, width=26, height=24
+                            ).pack(side=tk.LEFT, padx=2)
+        create_icon_button(inner_actions, "plus", command=self._show_insert_menu,
+                            tooltip="Insert page(s) before/after", size=13, width=26, height=24
+                            ).pack(side=tk.LEFT, padx=2)
+        create_icon_button(inner_actions, "delete", command=lambda: self._fire_toolbar_action('delete'),
+                            tooltip="Delete this page", size=13, width=26, height=24,
+                            variant="ghost").pack(side=tk.LEFT, padx=2)
+
+        ctk.CTkFrame(self, height=1, fg_color=ui_theme.BORDER, corner_radius=0
+                     ).pack(side=tk.TOP, fill=tk.X)
+        ctk.CTkLabel(self, text="Drag to reorder · right-click for more",
+                     font=ui_theme.font(9), text_color=ui_theme.TEXT_SECONDARY, wraplength=140,
+                     justify=tk.LEFT).pack(side=tk.TOP, fill=tk.X, padx=8, pady=(6, 6))
+
+        # Scrollbar -- plain tk.Scrollbar (not ttk) draws itself via Tk's
+        # own renderer rather than the Windows visual-styles engine, so
+        # unlike a ttk.Scrollbar it actually honors these color options.
+        scrollbar = tk.Scrollbar(
+            self, orient=tk.VERTICAL, width=12, bd=0, elementborderwidth=0,
+            troughcolor=sidebar_bg, background=ui_theme.resolve(ui_theme.BORDER_STRONG),
+            activebackground=ui_theme.resolve(ui_theme.ACCENT_HOVER),
+            highlightthickness=0)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Canvas for scrolling
-        self.canvas = tk.Canvas(self, bg='lightgray', highlightthickness=0,
+        self.canvas = tk.Canvas(self, bg=sidebar_bg, highlightthickness=0,
                                yscrollcommand=scrollbar.set, width=150)
         # command=self._on_scrollbar_scroll rather than plain
         # self.canvas.yview -- dragging the thumb (not just wheel
@@ -166,7 +205,7 @@ class ThumbnailPanel(tk.Frame):
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2, pady=2)
         
         # Frame inside canvas to hold thumbnails
-        self.thumbnails_frame = tk.Frame(self.canvas, bg='lightgray')
+        self.thumbnails_frame = tk.Frame(self.canvas, bg=sidebar_bg)
         self.canvas.create_window((0, 0), window=self.thumbnails_frame, anchor=tk.NW)
         
         # Update scroll region
@@ -187,7 +226,12 @@ class ThumbnailPanel(tk.Frame):
         self.selected_pages.clear()
         self.thumbnail_buttons.clear()
         self.thumbnail_frames.clear()
+        self.thumbnail_labels.clear()
+        self.thumbnail_indicators.clear()
+        self.thumbnail_bodies.clear()
         self.thumbnail_images.clear()
+        self._hovered_page = None
+        self.page_count_badge.configure(text=str(document.page_count) if document else "0")
         self._load_generation += 1
         generation = self._load_generation
 
@@ -273,22 +317,39 @@ class ThumbnailPanel(tk.Frame):
             return
         photo = PIL.ImageTk.PhotoImage(pil_image)
 
-        frame = tk.Frame(self.thumbnails_frame, bg='lightgray',
-                        relief=tk.SUNKEN, borderwidth=1)
-        frame.pack(fill=tk.X, padx=2, pady=2)
-        
+        card_bg = ui_theme.resolve(ui_theme.BG_SURFACE)
+
+        # "Card" look: a borderless block that reads as a distinct object
+        # purely through its own background shade against the sidebar
+        # behind it (BG_SURFACE vs BG_PANEL) -- no visible outline at
+        # rest. A left accent stripe + border only appear for
+        # hover/selected state (see _update_single_highlight), instead of
+        # painting the whole card a solid accent color.
+        frame = tk.Frame(self.thumbnails_frame, bg=card_bg, highlightthickness=1,
+                          highlightbackground=card_bg, highlightcolor=card_bg, bd=0)
+        frame.pack(fill=tk.X, padx=10, pady=5)
+
+        indicator = tk.Frame(frame, width=3, bg=card_bg)
+        indicator.pack(side=tk.LEFT, fill=tk.Y)
+
+        body = tk.Frame(frame, bg=card_bg)
+        body.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         btn = tk.Button(
-            frame,
+            body,
             image=photo,
-            bg='white',
-            relief=tk.RAISED,
-            borderwidth=2,
+            bg=card_bg,
+            activebackground=card_bg,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
+            cursor="hand2",
             command=lambda: self._on_thumbnail_click(page_num, None),
             height=140,
-            width=120
+            width=120,
         )
-        btn.pack(padx=2, pady=2)
-        
+        btn.pack(padx=10, pady=(10, 6))
+
         # Bind Ctrl+Click and Shift+Click
         btn.bind("<Control-Button-1>", lambda e: self._on_thumbnail_click(page_num, 'ctrl'))
         btn.bind("<Shift-Button-1>", lambda e: self._on_thumbnail_click(page_num, 'shift'))
@@ -305,15 +366,26 @@ class ThumbnailPanel(tk.Frame):
         btn.bind("<B1-Motion>", lambda e, p=page_num: self._on_drag_motion(e, p), add="+")
         btn.bind("<ButtonRelease-1>", lambda e, p=page_num: self._on_drag_release(e, p), add="+")
 
-        # Label
-        label = tk.Label(frame, text=f"Page {page_num}", bg='lightgray', 
-                        font=('Arial', 8))
-        label.pack(fill=tk.X)
-        
+        label = tk.Label(body, text=f"Page {page_num}", bg=card_bg,
+                        fg=ui_theme.resolve(ui_theme.TEXT_SECONDARY),
+                        font=(ui_theme.FONT_FAMILY, 9))
+        label.pack(fill=tk.X, pady=(0, 8))
+
+        # Hover feedback -- only when not the current/selected page (that
+        # state already has its own strong styling); applies to the whole
+        # card since the button+label cover most of it.
+        for widget in (frame, body, btn, label):
+            widget.bind("<Enter>", lambda e, p=page_num: self._on_thumbnail_hover(p, True), add="+")
+            widget.bind("<Leave>", lambda e, p=page_num: self._on_thumbnail_hover(p, False), add="+")
+
         # Store reference
         self.thumbnail_buttons[page_num] = btn
         self.thumbnail_frames[page_num] = frame
+        self.thumbnail_labels[page_num] = label
+        self.thumbnail_indicators[page_num] = indicator
+        self.thumbnail_bodies[page_num] = body
         self.thumbnail_images[page_num] = photo  # Keep reference to prevent garbage collection
+        self._update_single_highlight(page_num)
     
     def _on_thumbnail_click(self, page_num: int, modifier: Optional[str]):
         """Handle thumbnail click
@@ -367,7 +439,7 @@ class ThumbnailPanel(tk.Frame):
             if self.on_page_action:
                 self.on_page_action(action, page_num)
 
-        menu = tk.Menu(self, tearoff=0)
+        menu = self._themed_menu()
         menu.add_command(label="Move Up", command=lambda: fire('move_up'),
                           state=tk.NORMAL if can_move_up else tk.DISABLED)
         menu.add_command(label="Move Down", command=lambda: fire('move_down'),
@@ -376,11 +448,20 @@ class ThumbnailPanel(tk.Frame):
         menu.add_command(label="Insert Page(s) Before...", command=lambda: fire('insert_before'))
         menu.add_command(label="Insert Page(s) After...", command=lambda: fire('insert_after'))
         menu.add_separator()
-        menu.add_command(label="Delete This Page", command=lambda: fire('delete'))
+        menu.add_command(label="Delete This Page", command=lambda: fire('delete'),
+                          foreground=ui_theme.DANGER, activeforeground="white",
+                          activebackground=ui_theme.DANGER)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _themed_menu(self) -> tk.Menu:
+        return tk.Menu(
+            self, tearoff=0, bg=ui_theme.resolve(ui_theme.BG_SURFACE),
+            fg=ui_theme.resolve(ui_theme.TEXT_PRIMARY), activebackground=ui_theme.ACCENT,
+            activeforeground="white", relief=tk.FLAT, bd=0,
+            font=(ui_theme.FONT_FAMILY, 10))
 
     # ------------------------------------------------------------------ visible toolbar
 
@@ -397,7 +478,7 @@ class ThumbnailPanel(tk.Frame):
         distinguishing but there isn't room for two full-width buttons."""
         if not self.on_page_action:
             return
-        menu = tk.Menu(self, tearoff=0)
+        menu = self._themed_menu()
         menu.add_command(label="Insert Before This Page...",
                           command=lambda: self.on_page_action('insert_before', self.current_page))
         menu.add_command(label="Insert After This Page...",
@@ -480,7 +561,7 @@ class ThumbnailPanel(tk.Frame):
             ghost.attributes('-alpha', 0.85)   # slight transparency = "lifted" look
         except tk.TclError:
             pass
-        tk.Label(ghost, image=photo, bg='#0080FF', bd=2, relief=tk.SOLID).pack()
+        tk.Label(ghost, image=photo, bg=ui_theme.ACCENT, bd=2, relief=tk.SOLID).pack()
         ghost.update_idletasks()  # so winfo_width/height below reflect the real rendered size
 
         self._drag_ghost_offset = (ghost.winfo_width() // 2, ghost.winfo_height() // 2)
@@ -647,13 +728,68 @@ class ThumbnailPanel(tk.Frame):
 
     def _update_thumbnail_highlights(self):
         """Update visual highlighting of selected/current pages"""
-        for page_num, btn in self.thumbnail_buttons.items():
-            if page_num == self.current_page:
-                btn.config(relief=tk.SUNKEN, bg='lightblue')
-            elif page_num in self.selected_pages:
-                btn.config(relief=tk.RAISED, bg='lightyellow')
-            else:
-                btn.config(relief=tk.RAISED, bg='white')
+        for page_num in self.thumbnail_buttons:
+            self._update_single_highlight(page_num)
+
+    def _update_single_highlight(self, page_num: int):
+        """Restrained card styling for one thumbnail: the card's own
+        background never changes to a heavy tinted fill -- selection is
+        expressed with a thin accent border, a small 3px accent stripe on
+        the leading edge, and the caption's text color/weight, the same
+        vocabulary a properties inspector uses for a selected row. A
+        multi-selected-but-not-current page gets the same treatment in
+        the warning color instead of accent, so it stays visually
+        distinct from "this is the current page". Hover only nudges the
+        card to the next step up the surface ladder (BG_ELEVATED).
+        """
+        btn = self.thumbnail_buttons.get(page_num)
+        frame = self.thumbnail_frames.get(page_num)
+        label = self.thumbnail_labels.get(page_num)
+        indicator = self.thumbnail_indicators.get(page_num)
+        body = self.thumbnail_bodies.get(page_num)
+        if not btn or not frame:
+            return
+
+        base_bg = ui_theme.resolve(ui_theme.BG_SURFACE)
+
+        if page_num == self.current_page:
+            bg = base_bg
+            border = ui_theme.ACCENT
+            stripe = ui_theme.ACCENT
+            label_color = ui_theme.ACCENT
+            label_weight = "bold"
+        elif page_num in self.selected_pages:
+            bg = base_bg
+            border = ui_theme.resolve(ui_theme.MULTI_SELECT_BORDER)
+            stripe = border
+            label_color = ui_theme.resolve(ui_theme.MULTI_SELECT_BORDER)
+            label_weight = "normal"
+        elif page_num == self._hovered_page:
+            bg = ui_theme.resolve(ui_theme.BG_ELEVATED)
+            border = bg
+            stripe = bg
+            label_color = ui_theme.resolve(ui_theme.TEXT_SECONDARY)
+            label_weight = "normal"
+        else:
+            bg = base_bg
+            border = base_bg
+            stripe = base_bg
+            label_color = ui_theme.resolve(ui_theme.TEXT_SECONDARY)
+            label_weight = "normal"
+
+        frame.config(bg=bg, highlightbackground=border, highlightcolor=border, highlightthickness=1)
+        btn.config(bg=bg, activebackground=bg)
+        if body:
+            body.config(bg=bg)
+        if indicator:
+            indicator.config(bg=stripe)
+        if label:
+            label.config(bg=bg, fg=label_color, font=(ui_theme.FONT_FAMILY, 9, label_weight))
+
+    def _on_thumbnail_hover(self, page_num: int, entering: bool):
+        self._hovered_page = page_num if entering else None
+        if page_num not in (self.current_page, *self.selected_pages) or not entering:
+            self._update_single_highlight(page_num)
     
     def set_current_page(self, page_num: int):
         """Set the current page
@@ -763,13 +899,14 @@ class ThumbnailPanel(tk.Frame):
 class PDFViewerWidget(tk.Frame):
     """Embedded PDF viewer widget"""
 
-    PAGE_GAP = 14  # px gray divider between stacked pages in the scroll buffer
+    PAGE_GAP = 22  # px of bare workspace between stacked pages
 
     def __init__(self, parent, document: Optional[Document] = None,
                  on_page_changed: Optional[Callable[[int], None]] = None,
                  on_after_render: Optional[Callable] = None,
                  on_page_action: Optional[Callable[[str, int], None]] = None,
-                 on_page_reorder: Optional[Callable[[int, int], None]] = None, **kwargs):
+                 on_page_reorder: Optional[Callable[[int, int], None]] = None,
+                 on_open_requested: Optional[Callable] = None, **kwargs):
         """
         Initialize PDF viewer widget
 
@@ -787,6 +924,9 @@ class PDFViewerWidget(tk.Frame):
             on_page_reorder: Forwarded to ThumbnailPanel's drag-to-reorder
                 -- see ThumbnailPanel's own docstring for the
                 (from_page, to_page) contract.
+            on_open_requested: Optional callback() for the "Open a PDF..."
+                button shown in the empty-canvas placeholder before any
+                document is loaded.
             **kwargs: Additional frame arguments
         """
         super().__init__(parent, **kwargs)
@@ -797,6 +937,9 @@ class PDFViewerWidget(tk.Frame):
         self.zoom_mode = "fit_page"  # fit_page, fit_width, 100, custom
         self.on_page_action = on_page_action
         self.on_page_reorder = on_page_reorder
+        self.on_open_requested = on_open_requested
+        self._empty_state_window = None
+        self._empty_state_frame = None
 
         # Continuous-scroll layout: every page's (x, y_top, w, h, zoom) is
         # precomputed up front from document metadata alone (cheap -- no
@@ -811,7 +954,7 @@ class PDFViewerWidget(tk.Frame):
         self._sorted_y_tops: List[float] = []        # parallel to _page_order, for bisect lookup
         self._total_height = 0
         self._content_width = 0
-        self._rendered_pages: Dict[int, dict] = {}   # page_num -> {'photo', 'img_id', 'div_id'}
+        self._rendered_pages: Dict[int, dict] = {}   # page_num -> {'photo', 'img_id', 'shadow_ids'}
 
         self.on_page_changed = on_page_changed
         self.on_after_render = on_after_render
@@ -825,33 +968,52 @@ class PDFViewerWidget(tk.Frame):
     
     def _init_ui(self):
         """Initialize the UI"""
-        # Toolbar
-        toolbar = tk.Frame(self, bg='lightgray')
-        toolbar.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
-        
-        # Navigation buttons
-        tk.Button(toolbar, text="◄", command=self.prev_page, width=3).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="►", command=self.next_page, width=3).pack(side=tk.LEFT, padx=2)
-        
-        self.page_label = tk.Label(toolbar, text="Page 1 of 1")
-        self.page_label.pack(side=tk.LEFT, padx=10)
-        
-        tk.Label(toolbar, text="|").pack(side=tk.LEFT)
-        
-        # Zoom controls
-        tk.Button(toolbar, text="−", command=self.zoom_out, width=3).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="+", command=self.zoom_in, width=3).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Fit Page", command=self.fit_page).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Fit Width", command=self.fit_width).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="100%", command=self.zoom_100).pack(side=tk.LEFT, padx=2)
-        
-        self.zoom_label = tk.Label(toolbar, text="100%", width=5)
-        self.zoom_label.pack(side=tk.LEFT, padx=5)
-        
+        # Toolbar -- unobtrusive document controls docked above the
+        # workspace: page navigation on the left, zoom/fit on the right.
+        toolbar = ctk.CTkFrame(self, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=38)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
+        toolbar.pack_propagate(False)
+
+        nav_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+        nav_group.pack(side=tk.LEFT, padx=(ui_theme.SPACE_8, 0))
+        create_icon_button(nav_group, "chevron_left", command=self.prev_page,
+                            tooltip="Previous page (Page Up)", size=13, width=28, height=28
+                            ).pack(side=tk.LEFT, padx=(0, 4))
+        self.page_label = ctk.CTkLabel(nav_group, text="Page 1 of 1", font=ui_theme.font(12),
+                                        text_color=ui_theme.TEXT_PRIMARY)
+        self.page_label.pack(side=tk.LEFT, padx=4)
+        create_icon_button(nav_group, "chevron_right", command=self.next_page,
+                            tooltip="Next page (Page Down)", size=13, width=28, height=28
+                            ).pack(side=tk.LEFT, padx=(4, 0))
+
+        vertical_separator(toolbar, height=20)
+
+        zoom_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+        zoom_group.pack(side=tk.LEFT)
+        create_icon_button(zoom_group, "zoom_out", command=self.zoom_out,
+                            tooltip="Zoom out (Ctrl+-)", size=13, width=28, height=28
+                            ).pack(side=tk.LEFT, padx=(0, 4))
+        self.zoom_label = ctk.CTkLabel(zoom_group, text="100%", width=44, font=ui_theme.font(12),
+                                        text_color=ui_theme.TEXT_PRIMARY)
+        self.zoom_label.pack(side=tk.LEFT, padx=4)
+        create_icon_button(zoom_group, "zoom_in", command=self.zoom_in,
+                            tooltip="Zoom in (Ctrl++)", size=13, width=28, height=28
+                            ).pack(side=tk.LEFT, padx=(4, 8))
+
+        create_button(zoom_group, text="Fit Page", icon="fit_page", command=self.fit_page,
+                      variant="ghost", height=28, icon_size=13,
+                      tooltip="Fit whole page in view").pack(side=tk.LEFT, padx=2)
+        create_button(zoom_group, text="Fit Width", icon="fit_width", command=self.fit_width,
+                      variant="ghost", height=28, icon_size=13,
+                      tooltip="Fit page width to view").pack(side=tk.LEFT, padx=2)
+        create_button(zoom_group, text="100%", command=self.zoom_100,
+                      variant="ghost", height=28, tooltip="Actual size (Ctrl+0)"
+                      ).pack(side=tk.LEFT, padx=2)
+
         # Main content area: [Thumbnails] | [Canvas + Scrollbar]
         content_area = tk.Frame(self)
         content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         # Thumbnail panel on left side
         self.thumbnail_panel = ThumbnailPanel(
             content_area,
@@ -859,14 +1021,29 @@ class PDFViewerWidget(tk.Frame):
             on_scroll_page_changed=self._on_thumbnail_scrolled,
             on_page_action=self.on_page_action,
             on_page_reorder=self.on_page_reorder,
+            on_collapse_requested=self.toggle_thumbnails,
         )
         self.thumbnail_panel.pack(side=tk.LEFT, fill=tk.Y)
-        
+
+        # Collapsed stand-in for the pages panel: a narrow rail that keeps
+        # "there is a pages panel, here's how to get it back" on screen
+        # rather than hiding the panel with no way to find it again.
+        # Built now, packed only while collapsed.
+        self._thumb_rail = tk.Frame(content_area, bg=ui_theme.resolve(ui_theme.BG_PANEL), width=30)
+        self._thumb_rail.pack_propagate(False)
+        create_icon_button(self._thumb_rail, "panel_left", command=self.toggle_thumbnails,
+                            tooltip="Show pages panel", size=15, width=26, height=26,
+                            variant="tertiary").pack(pady=(6, 0))
+        self._thumbs_collapsed = False
+        self._last_layout_width = 0
+        self._relayout_job = None
+
         # Canvas for PDF display on right side
         canvas_frame = tk.Frame(content_area)
         canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._canvas_frame = canvas_frame
         
-        self.canvas = tk.Canvas(canvas_frame, bg='gray')
+        self.canvas = tk.Canvas(canvas_frame, bg=ui_theme.resolve(ui_theme.BG_APP), highlightthickness=0)
 
         # Scrollbar must be packed before the canvas -- pack() hands out
         # space in packing order, and the canvas's fill=BOTH/expand=True
@@ -878,7 +1055,13 @@ class PDFViewerWidget(tk.Frame):
         # arrows) must trigger the same render-window sync the wheel
         # handler does, otherwise pages you scroll to directly via the
         # scrollbar never get rendered (only wheel-driven scrolling did).
-        scrollbar = tk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self._on_scrollbar_scroll)
+        scrollbar = tk.Scrollbar(
+            canvas_frame, orient=tk.VERTICAL, command=self._on_scrollbar_scroll,
+            width=12, bd=0, elementborderwidth=0,
+            troughcolor=ui_theme.resolve(ui_theme.BG_APP),
+            background=ui_theme.resolve(ui_theme.BORDER_STRONG),
+            activebackground=ui_theme.resolve(ui_theme.ACCENT_HOVER),
+            highlightthickness=0)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.canvas.config(yscrollcommand=scrollbar.set)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -887,7 +1070,13 @@ class PDFViewerWidget(tk.Frame):
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind("<Button-4>", self._on_mousewheel)
         self.canvas.bind("<Button-5>", self._on_mousewheel)
-    
+        self.canvas.bind("<Configure>", self._on_canvas_configure_empty_state, add="+")
+        self.canvas.bind("<Configure>", self._on_canvas_resized, add="+")
+
+        # Show the empty-state placeholder immediately -- nothing else
+        # calls _update_display() until a document is actually loaded.
+        self._update_display()
+
     def refresh_after_page_ops(self, target_page: int = 1):
         """Call after Document.delete_page/move_page/insert_pages (or an
         undo/redo of one) mutates self.document.pages in place: reloads
@@ -921,10 +1110,9 @@ class PDFViewerWidget(tk.Frame):
     def _update_display(self):
         """Update the canvas display"""
         if not self.document or self.document.page_count == 0:
-            # Show placeholder
             self.canvas.delete("all")
-            self.canvas.create_text(300, 400, text="No PDF loaded", font=("Arial", 14))
-            self.page_label.config(text="No pages")
+            self._show_empty_state()
+            self.page_label.configure(text="No pages")
             self._full_layout = {}
             self._page_order = []
             self._sorted_y_tops = []
@@ -934,11 +1122,55 @@ class PDFViewerWidget(tk.Frame):
             self.canvas.config(scrollregion=(0, 0, 0, 0))
             return
 
+        self._hide_empty_state()
         self._rebuild_layout_and_render(self.current_page)
+
+    def _build_empty_state(self):
+        if self._empty_state_frame is not None:
+            return
+        self._empty_state_frame = empty_state(
+            self.canvas, icon="document", title="PDF Document Studio",
+            subtitle="Open a PDF to begin editing pages, footers, and images.",
+            button_text="Open PDF...", button_command=self._request_open)
+
+    def _request_open(self):
+        if self.on_open_requested:
+            self.on_open_requested()
+
+    def _on_canvas_configure_empty_state(self, _event=None):
+        if not self.document and self._empty_state_window is not None:
+            self._position_empty_state()
+
+    def _position_empty_state(self):
+        cw = max(self.canvas.winfo_width(), 200)
+        ch = max(self.canvas.winfo_height(), 200)
+        if self._empty_state_window is not None:
+            self.canvas.coords(self._empty_state_window, cw // 2, ch // 2)
+        else:
+            self._empty_state_window = self.canvas.create_window(
+                cw // 2, ch // 2, window=self._empty_state_frame, anchor="center")
+
+    def _show_empty_state(self):
+        self._build_empty_state()
+        self.canvas.after(1, self._position_empty_state)
+
+    def _hide_empty_state(self):
+        if self._empty_state_window is not None:
+            try:
+                self.canvas.delete(self._empty_state_window)
+            except tk.TclError:
+                pass
+            self._empty_state_window = None
+        if self._empty_state_frame is not None:
+            try:
+                self._empty_state_frame.destroy()
+            except tk.TclError:
+                pass
+            self._empty_state_frame = None
 
     def _update_page_label(self):
         if self.document:
-            self.page_label.config(text=f"Page {self.current_page} of {self.document.page_count}")
+            self.page_label.configure(text=f"Page {self.current_page} of {self.document.page_count}")
 
     def _page_pixel_size(self, page_num: int, zoom_factor: float) -> Tuple[int, int]:
         """Estimate a page's rendered pixel size from its PDF-point
@@ -1010,9 +1242,9 @@ class PDFViewerWidget(tk.Frame):
         return self._page_order[idx]
 
     def _render_page_bitmap(self, page_num: int):
-        """Render and draw a single page's bitmap (plus its trailing
-        divider bar) at its already-known absolute position. No-op if
-        already rendered.
+        """Render and draw a single page's bitmap (plus its drop shadow)
+        at its already-known absolute position. No-op if already
+        rendered.
         """
         if page_num in self._rendered_pages or page_num not in self._full_layout:
             return
@@ -1027,20 +1259,34 @@ class PDFViewerWidget(tk.Frame):
                 text=f"Could not render page {page_num}\n(Install PyMuPDF for best results)"
             )
         photo = PIL.ImageTk.PhotoImage(img)
+
+        # Subtle drop shadow so the page reads as a distinct object
+        # floating on the workspace, not flush with the background --
+        # a handful of offset, fading rectangles is cheap and reads fine
+        # on a flat canvas (a real blur isn't worth the cost here).
+        shadow_ids = []
+        x0, y0 = layout['x'], layout['y_top']
+        x1, y1 = x0 + layout['w'], y0 + layout['h']
+        shadow_near = ui_theme.resolve(ui_theme.SHADOW_NEAR)
+        shadow_far = ui_theme.resolve(ui_theme.SHADOW_FAR)
+        steps = 4
+        for i in range(steps, 0, -1):
+            offset = i * 2
+            color = ui_theme.lerp_hex(shadow_near, shadow_far, (i - 1) / (steps - 1))
+            shadow_ids.append(self.canvas.create_rectangle(
+                x0 + offset, y0 + offset, x1 + offset, y1 + offset,
+                fill=color, outline=""))
+
         img_id = self.canvas.create_image(layout['x'], layout['y_top'],
                                            image=photo, anchor=tk.NW)
 
-        # Divider bar in the gap below this page, so page boundaries stay
-        # visually clear while scrolling continuously through them (like
-        # Word's page view) -- skip after the last page (no gap follows it).
-        div_id = None
-        if page_num < self.document.page_count:
-            gap_top = layout['y_top'] + layout['h']
-            div_id = self.canvas.create_rectangle(
-                0, gap_top, self._content_width, gap_top + self.PAGE_GAP,
-                fill='#595959', width=0)
-
-        self._rendered_pages[page_num] = {'photo': photo, 'img_id': img_id, 'div_id': div_id}
+        # Page boundaries are marked by the gap itself -- bare workspace
+        # background between two shadowed white pages -- rather than by a
+        # drawn divider bar. The bar read as a stray UI element cutting
+        # across the document; separation by space is what desktop PDF
+        # readers do.
+        self._rendered_pages[page_num] = {'photo': photo, 'img_id': img_id,
+                                           'shadow_ids': shadow_ids}
 
     def _evict_page_bitmap(self, page_num: int):
         """Drop a rendered page's canvas items/bitmap once it's scrolled
@@ -1050,8 +1296,8 @@ class PDFViewerWidget(tk.Frame):
         if not entry:
             return
         self.canvas.delete(entry['img_id'])
-        if entry['div_id'] is not None:
-            self.canvas.delete(entry['div_id'])
+        for shadow_id in entry.get('shadow_ids', ()):
+            self.canvas.delete(shadow_id)
 
     def _sync_render_window(self):
         """Ensure pages within ~1 viewport-height of the visible area are
@@ -1260,34 +1506,94 @@ class PDFViewerWidget(tk.Frame):
         """Zoom in"""
         self.zoom_mode = "custom"
         self.zoom_level = min(self.zoom_level * 1.2, 4.0)
-        self.zoom_label.config(text=f"{int(self.zoom_level * 100)}%")
+        self.zoom_label.configure(text=f"{int(self.zoom_level * 100)}%")
         self._rebuild_layout_and_render(self.current_page)
 
     def zoom_out(self):
         """Zoom out"""
         self.zoom_mode = "custom"
         self.zoom_level = max(self.zoom_level / 1.2, 0.25)
-        self.zoom_label.config(text=f"{int(self.zoom_level * 100)}%")
+        self.zoom_label.configure(text=f"{int(self.zoom_level * 100)}%")
         self._rebuild_layout_and_render(self.current_page)
 
     def fit_page(self):
         """Fit entire page in canvas"""
         self.zoom_mode = "fit_page"
-        self.zoom_label.config(text="Fit")
+        self.zoom_label.configure(text="Fit")
         self._rebuild_layout_and_render(self.current_page)
 
     def fit_width(self):
         """Fit page width to canvas"""
         self.zoom_mode = "fit_width"
-        self.zoom_label.config(text="Width")
+        self.zoom_label.configure(text="Width")
         self._rebuild_layout_and_render(self.current_page)
 
     def zoom_100(self):
         """Zoom to 100%"""
         self.zoom_mode = "100"
         self.zoom_level = 1.0
-        self.zoom_label.config(text="100%")
+        self.zoom_label.configure(text="100%")
         self._rebuild_layout_and_render(self.current_page)
+
+    # ---- pages panel visibility ------------------------------------------
+
+    def toggle_thumbnails(self):
+        """Collapse the pages sidebar to a narrow rail, or restore it.
+
+        Both the panel and the rail are packed `before` the canvas frame
+        so whichever one is showing keeps its place on the left edge --
+        re-pack()ing without `before` would append it after the canvas
+        and flip the two sides of the viewer around.
+        """
+        if self._thumbs_collapsed:
+            self._thumb_rail.pack_forget()
+            self.thumbnail_panel.pack(side=tk.LEFT, fill=tk.Y, before=self._canvas_frame)
+        else:
+            self.thumbnail_panel.pack_forget()
+            self._thumb_rail.pack(side=tk.LEFT, fill=tk.Y, before=self._canvas_frame)
+        self._thumbs_collapsed = not self._thumbs_collapsed
+        self.refresh_layout()
+
+    def thumbnails_collapsed(self) -> bool:
+        return self._thumbs_collapsed
+
+    def refresh_layout(self):
+        """Ask for a re-layout after something outside the viewer changed
+        how much room it gets (either side panel being shown/hidden).
+
+        This only nudges; the actual work is driven by the canvas's own
+        <Configure> event. Re-laying out on a timer instead would measure
+        winfo_width() before Tk has applied the new pane geometry and
+        just re-center the page for the OLD width.
+        """
+        self._schedule_relayout()
+
+    def _on_canvas_resized(self, event):
+        """Re-fit/re-center when the canvas actually changes width --
+        window resize, sash drag, or a side panel being toggled. Height
+        changes alone don't affect page x/width, so they're ignored to
+        avoid re-rendering the whole viewport on every vertical nudge."""
+        if event.width == self._last_layout_width:
+            return
+        self._last_layout_width = event.width
+        self._schedule_relayout()
+
+    def _schedule_relayout(self):
+        """Debounced: dragging a window edge fires <Configure> per pixel,
+        and each re-layout re-renders every visible page."""
+        if not self.document:
+            return
+        if self._relayout_job is not None:
+            try:
+                self.after_cancel(self._relayout_job)
+            except tk.TclError:
+                pass
+        self._relayout_job = self.after(120, self._run_relayout)
+
+    def _run_relayout(self):
+        self._relayout_job = None
+        if self.document:
+            self._rebuild_layout_and_render(self.current_page)
 
     def _on_mousewheel(self, event):
         """Handle mouse wheel scroll -- glides continuously across page

@@ -153,8 +153,8 @@ class Document:
     # ------------------------------------------------------------------ page management
     #
     # delete_page/move_page/insert_pages are the ONLY place page order
-    # changes. Every other subsystem (ImageManager, PageSettingsPanel,
-    # QuickFooterPanel, DocumentExporter's per-page loop) keeps using plain
+    # changes. Every other subsystem (ImageManager, QuickFooterPanel,
+    # DocumentExporter's per-page loop) keeps using plain
     # 1-indexed *display position* exactly as before -- these methods just
     # make sure page_configs/PageObject.page_number are carried along to
     # each page's new position instead of staying pinned to the old index.

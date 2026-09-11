@@ -47,8 +47,11 @@ import os
 import tkinter as tk
 from typing import Callable, Dict, List, Optional, Tuple
 
+import customtkinter as ctk
 from PIL import Image, ImageTk
 
+from utils import ui_theme
+from utils.widgets import create_button
 from app.image_editor import ImageEditor, SelectionBox
 from app.undo_redo import UndoRedoManager
 from app.document_commands import (
@@ -820,7 +823,7 @@ class ImageOverlayController:
             self.redraw()
 
 
-class ImagePropertiesPanel(tk.Frame):
+class ImagePropertiesPanel(ctk.CTkFrame):
     """Numeric X/Y/Width/Height/Rotation/Opacity editor for the currently
     selected image object, plus Lock/Delete/Duplicate.
     """
@@ -832,6 +835,16 @@ class ImagePropertiesPanel(tk.Frame):
                  on_applied: Optional[Callable] = None,
                  on_selection_changed: Optional[Callable[[Optional[str]], None]] = None,
                  **kwargs):
+        kwargs.setdefault('fg_color', ui_theme.BG_APP)
+        kwargs.setdefault('corner_radius', 0)
+        # CTkFrame defaults to height=200 when not given one -- with zero
+        # packed children (the collapsed/nothing-selected state) there's
+        # nothing for pack_propagate to shrink-wrap to, so it silently
+        # falls back to that 200px default instead of ~0, reserving a
+        # large dead strip of the side panel even while "hidden". An
+        # explicit height=1 collapses correctly; set_enabled(True) still
+        # grows it to fit the real form via pack_propagate as normal.
+        kwargs.setdefault('height', 1)
         super().__init__(parent, **kwargs)
         self.undo_manager = undo_manager
         self.on_applied = on_applied
@@ -847,39 +860,60 @@ class ImagePropertiesPanel(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        header = tk.Frame(self, bg='darkgray')
-        header.pack(side=tk.TOP, fill=tk.X)
-        tk.Label(header, text="Image Properties", bg='darkgray', fg='white',
-                 font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=4, pady=2)
+        # Nothing here is packed yet -- set_enabled() controls visibility.
+        # This whole panel takes essentially zero space until an image is
+        # actually selected, instead of permanently reserving a slot in
+        # the side panel for a "nothing selected" placeholder.
+        self.divider = ctk.CTkFrame(self, height=1, fg_color=ui_theme.BORDER, corner_radius=0)
+        self.header = ctk.CTkFrame(self, fg_color=ui_theme.BG_SURFACE, corner_radius=0)
+        ctk.CTkLabel(self.header, text="Image Properties", font=ui_theme.font(11, "bold"),
+                     text_color=ui_theme.TEXT_PRIMARY).pack(side=tk.LEFT, padx=8, pady=4)
 
-        self.body = tk.Frame(self)
-        self.body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.content_area = ctk.CTkFrame(self, fg_color="transparent")
 
-        for i, (key, label) in enumerate(self.FIELDS):
-            tk.Label(self.body, text=f"{label}:").grid(row=i, column=0, sticky='e', pady=2)
-            var = tk.StringVar()
-            entry = tk.Entry(self.body, textvariable=var, width=10)
-            entry.grid(row=i, column=1, sticky='w', pady=2)
-            entry.bind('<Return>',   lambda e, k=key: self._apply_field(k))
-            entry.bind('<FocusOut>', lambda e, k=key: self._apply_field(k))
-            self.vars[key] = var
+        # Two fields per row (X/Y, Width/Height, Rotation/Opacity) instead
+        # of one long vertical stack -- halves the height this form needs
+        # without cramming any single field.
+        self.body = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        self.body.columnconfigure(1, weight=1)
+        self.body.columnconfigure(3, weight=1)
 
-        row = len(self.FIELDS)
+        field_pairs = [self.FIELDS[i:i + 2] for i in range(0, len(self.FIELDS), 2)]
+        for row, pair in enumerate(field_pairs):
+            for slot, (key, label) in enumerate(pair):
+                col = slot * 2
+                ctk.CTkLabel(self.body, text=label, font=ui_theme.font(11),
+                             text_color=ui_theme.TEXT_SECONDARY, anchor='w'
+                             ).grid(row=row, column=col, sticky='w', pady=3, padx=(0 if col == 0 else 10, 6))
+                var = tk.StringVar()
+                entry = ctk.CTkEntry(self.body, textvariable=var, height=26,
+                                      corner_radius=ui_theme.RADIUS_SM, border_color=ui_theme.BORDER,
+                                      fg_color=ui_theme.BG_SUBTLE, font=ui_theme.font(11))
+                entry.grid(row=row, column=col + 1, sticky='ew', pady=3)
+                entry.bind('<Return>',   lambda e, k=key: self._apply_field(k))
+                entry.bind('<FocusOut>', lambda e, k=key: self._apply_field(k))
+                self.vars[key] = var
+
+        row = len(field_pairs)
         self.lock_aspect_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(self.body, text="Lock aspect ratio",
-                        variable=self.lock_aspect_var).grid(
-            row=row, column=0, columnspan=2, sticky='w')
+        ctk.CTkCheckBox(self.body, text="Lock aspect ratio", variable=self.lock_aspect_var,
+                         font=ui_theme.font(11), fg_color=ui_theme.ACCENT,
+                         hover_color=ui_theme.ACCENT_HOVER, checkbox_width=16, checkbox_height=16
+                         ).grid(row=row, column=0, columnspan=2, sticky='w', pady=(6, 2))
 
         self.locked_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(self.body, text="Locked", variable=self.locked_var,
-                        command=self._apply_locked).grid(
-            row=row + 1, column=0, columnspan=2, sticky='w')
+        ctk.CTkCheckBox(self.body, text="Locked", variable=self.locked_var,
+                         command=self._apply_locked, font=ui_theme.font(11),
+                         fg_color=ui_theme.ACCENT, hover_color=ui_theme.ACCENT_HOVER,
+                         checkbox_width=16, checkbox_height=16
+                         ).grid(row=row, column=2, columnspan=2, sticky='w', pady=(6, 2))
 
-        btns = tk.Frame(self.body)
-        btns.grid(row=row + 2, column=0, columnspan=2, pady=6)
-        tk.Button(btns, text="Duplicate", command=self._duplicate).pack(side=tk.LEFT, padx=2)
-        tk.Button(btns, text="Delete",    command=self._delete,
-                  bg='salmon').pack(side=tk.LEFT, padx=2)
+        btns = ctk.CTkFrame(self.body, fg_color="transparent")
+        btns.grid(row=row + 1, column=0, columnspan=4, pady=(8, 0), sticky='ew')
+        create_button(btns, text="Duplicate", icon="duplicate", command=self._duplicate,
+                      variant="secondary", height=28).pack(side=tk.LEFT, padx=(0, 6))
+        create_button(btns, text="Delete", icon="delete", command=self._delete,
+                      variant="destructive", height=28).pack(side=tk.LEFT)
 
         self.set_enabled(False)
 
@@ -916,12 +950,26 @@ class ImagePropertiesPanel(tk.Frame):
         self.set_enabled(False)
 
     def set_enabled(self, enabled: bool):
-        state = tk.NORMAL if enabled else tk.DISABLED
-        for child in self.body.winfo_children():
-            try:
-                child.configure(state=state)
-            except tk.TclError:
-                pass
+        """Show or fully collapse this panel -- with nothing selected it
+        takes ~0 space (not a permanently-reserved "nothing selected"
+        block), so Quick Footer/Tools above it get that room back until
+        there's actually something to show properties for."""
+        if enabled:
+            self.divider.pack(side=tk.TOP, fill=tk.X)
+            self.header.pack(side=tk.TOP, fill=tk.X)
+            self.content_area.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.body.pack(fill=tk.BOTH, expand=True, padx=ui_theme.PAD, pady=ui_theme.PAD)
+        else:
+            self.body.pack_forget()
+            self.content_area.pack_forget()
+            self.header.pack_forget()
+            self.divider.pack_forget()
+            # Unpacking every child isn't enough to shrink the frame back:
+            # with no slaves left, pack propagation has nothing to measure
+            # and the frame just keeps whatever height it last grew to,
+            # leaving a dead band where the panel used to be. Ask for the
+            # collapsed height explicitly.
+            self.configure(height=1)
 
     def _apply_field(self, key):
         if self._suspend or not self.image_id or not self.manager:

@@ -1,40 +1,40 @@
 """
 Insert Page(s) from PDF dialog -- lets the user pick a source PDF, see it
-as a grid of real page thumbnails with a running "N of M selected" count,
-click pages on/off (all selected by default), then hands the resulting
-PageRefs back to the caller. The caller (editor_window.py) owns the
-actual insertion position and the undo-managed Document.insert_pages
-call (via InsertPagesCommand) -- this dialog only reads the chosen
-source file's metadata/thumbnails and builds the PageRef list, it never
-touches the live Document itself.
+as a responsive grid of real page thumbnails with a running "N of M
+selected" count, click pages on/off (all selected by default), then
+hands the resulting PageRefs back to the caller. The caller
+(editor_window.py) owns the actual insertion position and the
+undo-managed Document.insert_pages call (via InsertPagesCommand) -- this
+dialog only reads the chosen source file's metadata/thumbnails and
+builds the PageRef list, it never touches the live Document itself.
 """
 
 import os
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
-from typing import Callable, Dict, List, Optional
+from tkinter import filedialog
+from typing import Callable, Dict, List, Optional, Set
 
+import customtkinter as ctk
 import PIL.Image
 import PIL.ImageTk
-import PIL.ImageOps
-import PIL.ImageEnhance
 
 from models import PageRef
 from pdf.pdf_loader import PDFLoader
 from viewer.pdf_renderer import PDFRenderer
+from utils.ui_theme import (
+    ACCENT, BG_APP, BG_ELEVATED, BG_PANEL, BG_SUBTLE, BG_SURFACE, BORDER,
+    BORDER_SUBTLE, BORDER_STRONG, PAD, PAD_LG, RADIUS, RADIUS_SM,
+    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, apply_base_theme, font,
+)
+from utils.widgets import create_button, create_icon_button, vertical_separator
 from utils.ui_helpers import center_window
+from utils import icons as icon_lib
+from app import modern_dialogs as dialogs
 
-_GRID_COLUMNS = 4
-_THUMB_MAX = (90, 120)
-
-# Selection styling -- three redundant cues (checkbox glyph, border
-# color/thickness, dimmed-vs-bright image) so selected/unselected is
-# obvious at a glance, not a subtle color difference to hunt for.
-_SELECTED_BORDER = '#1565C0'
-_UNSELECTED_BORDER = '#bbbbbb'
-_CHECK_ON = "☑"   # ☑
-_CHECK_OFF = "☐"  # ☐
+CARD_W, CARD_H = 136, 196
+PREVIEW_W, PREVIEW_H = 100, 128
+BADGE_SIZE = 20
 
 
 def parse_page_range(spec: str, page_count: int) -> List[int]:
@@ -65,7 +65,104 @@ def parse_page_range(spec: str, page_count: int) -> List[int]:
     return sorted(pages)
 
 
-class InsertPagesDialog(tk.Toplevel):
+class PageCard(ctk.CTkFrame):
+    """One page-preview card in the gallery grid: a white document
+    preview with a small floating selection badge in its corner and a
+    'Page N' caption below a thin divider -- the preview stays the visual
+    focus, not a checkbox row. Click anywhere on the card to toggle.
+    Shows a placeholder until its thumbnail has actually finished
+    rendering (rendering happens progressively, one page at a time, in a
+    background thread)."""
+
+    def __init__(self, parent, page_num: int, selected: bool,
+                 on_toggle: Callable[[int], None]):
+        super().__init__(parent, width=CARD_W, height=CARD_H, corner_radius=RADIUS,
+                          fg_color=BG_SURFACE, border_width=1, border_color=BORDER)
+        self.grid_propagate(False)
+        self.page_num = page_num
+        self.on_toggle = on_toggle
+        self._selected = selected
+        self._hovered = False
+        self._photo: Optional[PIL.ImageTk.PhotoImage] = None
+
+        self.preview = ctk.CTkFrame(self, width=PREVIEW_W, height=PREVIEW_H, corner_radius=RADIUS_SM,
+                                     fg_color="white", border_width=1, border_color=BORDER_STRONG)
+        self.preview.pack(padx=12, pady=(12, 8))
+        self.preview.pack_propagate(False)
+        self._placeholder = ctk.CTkLabel(self.preview, text="...", font=font(16),
+                                          text_color=TEXT_SECONDARY)
+        self._placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        self._image_label: Optional[tk.Label] = None
+
+        ctk.CTkFrame(self, height=1, fg_color=BORDER_SUBTLE, corner_radius=0
+                     ).pack(fill="x", padx=12)
+        self.caption = ctk.CTkLabel(self, text=f"Page {page_num}", font=font(11),
+                                     text_color=TEXT_SECONDARY)
+        self.caption.pack(pady=(6, 10))
+
+        # Floating selection badge -- a small circle overlapping the
+        # preview's top-left corner (Google-Photos-style), always present
+        # so the card's clickable/selectable affordance is visible even
+        # before anything is selected, filled solid only once selected.
+        self.badge = ctk.CTkFrame(self, width=BADGE_SIZE, height=BADGE_SIZE,
+                                   corner_radius=BADGE_SIZE // 2, fg_color=BG_SURFACE,
+                                   border_width=1.5, border_color=BORDER_STRONG)
+        self.badge.place(x=8, y=8)
+        self.badge.pack_propagate(False)
+        self._badge_check = ctk.CTkLabel(self.badge, image=icon_lib.get("check", size=11, color="white"), text="")
+
+        self.set_selected(selected)
+
+        for widget in (self, self.preview, self.caption):
+            widget.bind("<Button-1>", self._on_card_click)
+            widget.bind("<Enter>", self._on_enter)
+            widget.bind("<Leave>", self._on_leave)
+
+    def set_thumbnail(self, pil_image: PIL.Image.Image):
+        self._placeholder.destroy()
+        self._photo = PIL.ImageTk.PhotoImage(pil_image)
+        # A plain tkinter.Label (not CTkLabel) for the actual bitmap --
+        # CTkLabel's own image handling wants a CTkImage for correct
+        # scaling; a raw PhotoImage label matches how ThumbnailPanel's
+        # own thumbnails work elsewhere in this app.
+        self._image_label = tk.Label(self.preview, image=self._photo, bg='white', bd=0)
+        self._image_label.pack(expand=True)
+        for widget in (self._image_label,):
+            widget.bind("<Button-1>", self._on_card_click)
+            widget.bind("<Enter>", self._on_enter)
+            widget.bind("<Leave>", self._on_leave)
+
+    def _on_card_click(self, _event=None):
+        self.set_selected(not self._selected)
+        self.on_toggle(self.page_num)
+
+    def _on_enter(self, _event=None):
+        self._hovered = True
+        self._apply_style()
+
+    def _on_leave(self, _event=None):
+        self._hovered = False
+        self._apply_style()
+
+    def set_selected(self, selected: bool):
+        self._selected = selected
+        self._apply_style()
+
+    def _apply_style(self):
+        if self._selected:
+            self.configure(fg_color=BG_ELEVATED, border_color=ACCENT, border_width=2)
+            self.badge.configure(fg_color=ACCENT, border_width=0)
+            self._badge_check.place(relx=0.5, rely=0.5, anchor="center")
+        else:
+            self._badge_check.place_forget()
+            self.badge.configure(fg_color=BG_SURFACE, border_width=1.5, border_color=BORDER_STRONG)
+            if self._hovered:
+                self.configure(fg_color=BG_ELEVATED, border_color=BORDER_STRONG, border_width=1)
+            else:
+                self.configure(fg_color=BG_SURFACE, border_color=BORDER, border_width=1)
+
+
+class InsertPagesDialog(ctk.CTkToplevel):
     def __init__(self, parent, on_insert: Callable[[List[PageRef]], None],
                  title: str = "Insert Page(s) from PDF"):
         """
@@ -75,155 +172,141 @@ class InsertPagesDialog(tk.Toplevel):
                 Cancel.
         """
         super().__init__(parent)
+        apply_base_theme()
         self.title(title)
-        # Rough placeholder geometry -- immediately replaced below by
-        # _fit_to_content() once the real (empty-state) content exists to
-        # measure, so this number barely matters. Without it, the window
-        # briefly flashes at whatever size Tk defaults to before layout.
-        center_window(self, parent, 480, 300)
-        self.minsize(420, 260)
-        self.transient(parent)
+        self.configure(fg_color=BG_APP)
 
         self.on_insert = on_insert
         self._refs: List[PageRef] = []          # all pages of the chosen source, once loaded
-        self._selected: set = set()              # 0-based indices into self._refs
-        self._thumb_frames: Dict[int, tk.Frame] = {}
-        self._thumb_labels: Dict[int, tk.Label] = {}       # the image label (swapped bright/dimmed)
-        self._thumb_checks: Dict[int, tk.Label] = {}       # checkbox glyph label
-        self._thumb_page_labels: Dict[int, tk.Label] = {}  # "Page N" caption label
-        self._thumb_images: Dict[int, PIL.ImageTk.PhotoImage] = {}         # bright (selected) version
-        self._thumb_images_dim: Dict[int, PIL.ImageTk.PhotoImage] = {}     # dimmed/grayscale (unselected) version
+        self._selected: Set[int] = set()         # 0-based indices into self._refs
+        self.cards: Dict[int, PageCard] = {}     # 0-based index -> card
         self._load_generation = 0
-        self._loading = False
-        self._build_ui()
+        self._columns = 1
 
-        # Size to the actual "no PDF chosen yet" placeholder content, the
-        # same way _fit_to_content() sizes to a loaded page grid later --
-        # not the old fixed 600x680, which stayed oversized-and-mostly-
-        # empty until a file was picked.
-        self._fit_to_content(self._load_generation)
+        self._build_ui()
+        center_window(self, parent, 640, 680)
+
+        self.transient(parent)
+        self.grab_set()
+        self.focus_set()
+
+    # ---------------------------------------------------------------- layout
 
     def _build_ui(self):
-        pad = dict(padx=10, pady=6)
-
-        # grid (not pack) for the top-level stack, with weight only on the
-        # thumbnail-grid row: pack()ing a side=TOP/expand=True widget
-        # *before* a widget that must stay pinned (here, the bottom
-        # Insert/Cancel bar) starves that later widget of space whenever
-        # the window is too short to fit everything at once -- exactly
-        # what was happening (the button bar getting squeezed off-screen
-        # with a long page list). grid's explicit row weights make the
-        # thumbnail area the only one that shrinks/grows/scrolls; the top
-        # controls and bottom button bar always get their full requested
-        # size regardless of window height.
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)  # row 1 = the scrollable thumbnail grid
+        self.rowconfigure(2, weight=1)  # only the gallery row expands
 
-        top = tk.Frame(self)
-        top.grid(row=0, column=0, sticky='ew')
-        top.columnconfigure(1, weight=1)
-        self._top_frame = top  # measured later to size the window to fit actual content
+        # ---- header: title + short description ---------------------------------
+        header = ctk.CTkFrame(self, fg_color=BG_SURFACE, corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header_inner = ctk.CTkFrame(header, fg_color="transparent")
+        header_inner.pack(fill="x", padx=PAD_LG, pady=(PAD_LG, PAD))
+        ctk.CTkLabel(header_inner, text="Insert Pages from PDF", font=font(15, "bold"),
+                     text_color=TEXT_PRIMARY, anchor="w").pack(fill="x")
+        ctk.CTkLabel(header_inner, text="Choose pages from another PDF to insert into this document.",
+                     font=font(11), text_color=TEXT_SECONDARY, anchor="w").pack(fill="x", pady=(2, 0))
 
-        tk.Label(top, text="Source PDF:").grid(row=0, column=0, sticky='w', **pad)
-        self.path_var = tk.StringVar(value="")
-        tk.Entry(top, textvariable=self.path_var).grid(row=0, column=1, sticky='ew', **pad)
-        tk.Button(top, text="Browse...", command=self._browse).grid(row=0, column=2, **pad)
+        # ---- source row: entry + Browse fused into one control group -----------
+        source_row = ctk.CTkFrame(header, fg_color="transparent")
+        source_row.pack(fill="x", padx=PAD_LG, pady=(0, 4))
+        source_row.columnconfigure(0, weight=1)
 
-        self.info_label = tk.Label(top, text="Choose a PDF to see its pages.",
-                                    fg='gray30', font=('Arial', 9), anchor='w')
-        self.info_label.grid(row=1, column=0, columnspan=3, sticky='w', padx=10)
+        # Entry and Browse sit flush against each other (same height, a
+        # hairline gap) so they read as one unified "source" control
+        # rather than two unrelated widgets.
+        self.path_entry = ctk.CTkEntry(
+            source_row, placeholder_text="Choose a PDF to pull pages from...",
+            height=34, corner_radius=RADIUS_SM, border_color=BORDER, fg_color=BG_SUBTLE,
+            font=font(12))
+        self.path_entry.grid(row=0, column=0, sticky="ew")
 
-        controls = tk.Frame(top)
-        controls.grid(row=2, column=0, columnspan=3, sticky='ew', padx=6, pady=(8, 2))
-        tk.Button(controls, text="Select All", command=self._select_all).pack(side=tk.LEFT, padx=4)
-        tk.Button(controls, text="Select None", command=self._select_none).pack(side=tk.LEFT, padx=4)
-        tk.Label(controls, text="Quick select:").pack(side=tk.LEFT, padx=(16, 2))
-        self.range_var = tk.StringVar(value="")
-        range_entry = tk.Entry(controls, textvariable=self.range_var, width=12)
-        range_entry.pack(side=tk.LEFT)
-        range_entry.bind('<Return>', lambda e: self._apply_quick_range())
-        tk.Button(controls, text="Apply", command=self._apply_quick_range).pack(side=tk.LEFT, padx=4)
-        tk.Label(top, text='Quick select e.g. "1-3,5" or "all" -- or just click pages below',
-                 fg='gray40', font=('Arial', 8)).grid(row=3, column=0, columnspan=3, sticky='w', padx=10)
+        browse_btn = create_button(source_row, text="Browse...", icon="open", command=self._browse,
+                                   variant="secondary", height=34)
+        browse_btn.grid(row=0, column=1, padx=(6, 0))
 
-        # -- scrollable thumbnail grid (the one row/widget that expands) --
-        grid_container = tk.Frame(self, relief=tk.SUNKEN, bd=1)
-        grid_container.grid(row=1, column=0, sticky='nsew', padx=10, pady=(8, 4))
+        self.info_label = ctk.CTkLabel(header, text="Choose a PDF to see its pages.",
+                                        font=font(11), text_color=TEXT_MUTED, anchor="w")
+        self.info_label.pack(fill="x", padx=PAD_LG, pady=(6, PAD_LG))
 
-        scrollbar = tk.Scrollbar(grid_container, orient=tk.VERTICAL)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.grid_canvas = tk.Canvas(grid_container, bg='#eeeeee', highlightthickness=0,
-                                      yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.grid_canvas.yview)
-        self.grid_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.grid_canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self.grid_canvas.bind("<Button-4>", self._on_mousewheel)
-        self.grid_canvas.bind("<Button-5>", self._on_mousewheel)
+        ctk.CTkFrame(self, height=1, fg_color=BORDER_SUBTLE, corner_radius=0).grid(row=0, column=0, sticky="sew")
 
-        self.grid_frame = tk.Frame(self.grid_canvas, bg='#eeeeee')
-        # anchor='n' (top-center) at x=canvas_width/2, not 'nw' at x=0 --
-        # the dialog's overall width is often wider than the thumbnail
-        # grid's own natural width (the header controls need more room
-        # than a 4-column grid does), and stretching the frame to fill
-        # that width left an obviously lopsided empty area on the right.
-        # Centering the grid horizontally instead turns any extra width
-        # into a symmetric margin on both sides, which reads as normal
-        # breathing room rather than a "why is this empty?" mistake.
-        self.grid_window = self.grid_canvas.create_window((0, 0), window=self.grid_frame, anchor=tk.N)
-        self.grid_frame.bind("<Configure>", lambda e: self.grid_canvas.config(
-            scrollregion=self.grid_canvas.bbox("all")))
-        self.grid_canvas.bind("<Configure>", lambda e: self.grid_canvas.coords(
-            self.grid_window, max(e.width, self.grid_frame.winfo_reqwidth()) // 2, 0))
+        # ---- action bar: select all/none + quick select ------------------------
+        action_bar = ctk.CTkFrame(self, fg_color=BG_APP, corner_radius=0)
+        action_bar.grid(row=1, column=0, sticky="ew", padx=PAD_LG, pady=PAD)
 
-        self._placeholder_label = tk.Label(self.grid_frame, text="No PDF chosen yet.",
-                                            bg='#eeeeee', fg='gray40')
-        self._placeholder_label.pack(pady=30)
+        create_button(action_bar, text="Select All", command=self._select_all,
+                      variant="ghost", height=28).pack(side="left")
+        create_button(action_bar, text="Select None", command=self._select_none,
+                      variant="ghost", height=28).pack(side="left", padx=(2, 0))
 
-        # -- bottom bar (fixed row, never shrinks/scrolls away) --
-        bottom = tk.Frame(self)
-        bottom.grid(row=2, column=0, sticky='ew', padx=10, pady=(0, 10))
-        self._bottom_frame = bottom  # measured later to size the window to fit actual content
-        self.selection_label = tk.Label(bottom, text="", fg='gray20', anchor='w')
-        self.selection_label.pack(side=tk.LEFT)
+        vertical_separator(action_bar, height=18)
 
-        btns = tk.Frame(bottom)
-        btns.pack(side=tk.RIGHT)
-        self.insert_button = tk.Button(btns, text="Insert Selected", command=self._start_insert,
-                                        bg='#2e7d32', fg='white', width=16, state=tk.DISABLED)
-        self.insert_button.pack(side=tk.LEFT, padx=4)
-        tk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=4)
+        ctk.CTkLabel(action_bar, text="Quick select", font=font(11),
+                     text_color=TEXT_SECONDARY).pack(side="left", padx=(0, 8))
+        self.range_entry = ctk.CTkEntry(
+            action_bar, placeholder_text='e.g. "1-3,5" or "all"', width=150, height=28,
+            corner_radius=RADIUS_SM, border_color=BORDER, fg_color=BG_SURFACE, font=font(12))
+        self.range_entry.pack(side="left")
+        self.range_entry.bind("<Return>", lambda e: self._apply_quick_range())
+        create_button(action_bar, text="Apply", command=self._apply_quick_range,
+                      variant="ghost", height=28).pack(side="left", padx=(4, 0))
 
-    def _on_mousewheel(self, event):
-        delta = 3 if (event.num == 5 or event.delta < 0) else -3
-        self.grid_canvas.yview_scroll(delta, "units")
+        # ---- scrollable grid gallery --------------------------------------------
+        self.gallery = ctk.CTkScrollableFrame(self, fg_color=BG_APP, corner_radius=0)
+        self.gallery.grid(row=2, column=0, sticky="nsew", padx=(PAD_LG - 6, PAD_LG - 6))
+        self.gallery.bind("<Configure>", self._on_gallery_resize)
+
+        self._empty_label = ctk.CTkLabel(
+            self.gallery, text="No PDF chosen yet.", font=font(12), text_color=TEXT_SECONDARY)
+        self._empty_label.pack(pady=60)
+
+        # ---- bottom bar: summary + primary/secondary actions --------------------
+        ctk.CTkFrame(self, height=1, fg_color=BORDER_SUBTLE, corner_radius=0).grid(row=3, column=0, sticky="new")
+        bottom = ctk.CTkFrame(self, fg_color=BG_SURFACE, corner_radius=0)
+        bottom.grid(row=4, column=0, sticky="ew")
+        bottom.columnconfigure(0, weight=1)
+
+        self.selection_label = ctk.CTkLabel(bottom, text="", font=font(12), text_color=TEXT_SECONDARY)
+        self.selection_label.grid(row=0, column=0, sticky="w", padx=PAD_LG, pady=PAD_LG)
+
+        btn_row = ctk.CTkFrame(bottom, fg_color="transparent")
+        btn_row.grid(row=0, column=1, sticky="e", padx=PAD_LG, pady=PAD)
+        create_button(btn_row, text="Cancel", command=self.destroy,
+                      variant="secondary", width=100, height=36).pack(side="left", padx=(0, 8))
+        self.insert_button = create_button(
+            btn_row, text="Insert Pages", icon="insert_pages", command=self._start_insert,
+            variant="primary", width=150, height=36)
+        self.insert_button.configure(state="disabled")
+        self.insert_button.pack(side="left")
+
+    # ---------------------------------------------------------------- source loading
 
     def _browse(self):
-        path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
+        path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")], parent=self)
         if path:
-            self.path_var.set(path)
+            self.path_entry.delete(0, "end")
+            self.path_entry.insert(0, path)
             self._load_source(path)
 
     def _load_source(self, path: str):
         if not path or not os.path.exists(path):
-            messagebox.showerror("Insert Pages", "Please choose a valid PDF file.")
+            dialogs.show_error(self, "Insert Pages", "Please choose a valid PDF file.")
             return
 
         self._load_generation += 1
         generation = self._load_generation
-        self._loading = True
         self._refs = []
         self._selected = set()
-        self._thumb_frames.clear()
-        self._thumb_labels.clear()
-        self._thumb_images.clear()
-        for w in self.grid_frame.winfo_children():
+        self.cards.clear()
+        for w in self.gallery.winfo_children():
             w.destroy()
 
-        self.insert_button.config(state=tk.DISABLED)
-        self.info_label.config(text=f"Reading {os.path.basename(path)} ...", fg='#8a5a00')
-        self.selection_label.config(text="")
-        loading_label = tk.Label(self.grid_frame, text="Loading pages...", bg='#eeeeee', fg='gray40')
-        loading_label.pack(pady=30)
+        self.insert_button.configure(state="disabled")
+        self.info_label.configure(text=f"Reading {os.path.basename(path)} ...", text_color="#C9962B")
+        self.selection_label.configure(text="")
+        loading_label = ctk.CTkLabel(self.gallery, text="Loading pages...", font=font(12),
+                                      text_color=TEXT_SECONDARY)
+        loading_label.pack(pady=60)
 
         def worker():
             try:
@@ -237,133 +320,106 @@ class InsertPagesDialog(tk.Toplevel):
                 if generation != self._load_generation:
                     return  # a newer _load_source() superseded this run
                 # zoom=1.0 at this dpi -> ~204x264px for a Letter page,
-                # comfortably bigger than the _THUMB_MAX box below so
+                # comfortably bigger than the card's preview box so
                 # .thumbnail() (shrink-only) actually downscales with
-                # real anti-aliasing instead of the render already being
-                # smaller than the box (leaving a tiny page floating in
-                # empty space).
+                # real anti-aliasing.
                 img = PDFRenderer.render_page(ref.source_path, ref.source_index + 1,
                                                dpi=24, zoom=1.0)
                 if img is None:
-                    img = PDFRenderer.create_placeholder_image(width=90, height=120,
+                    img = PDFRenderer.create_placeholder_image(width=PREVIEW_W, height=PREVIEW_H,
                                                                  text=f"P{idx + 1}")
-                img.thumbnail(_THUMB_MAX, PIL.Image.Resampling.LANCZOS)
-                self.after(0, lambda i=idx, im=img: self._add_thumbnail(i, im, generation))
-            self.after(0, lambda: self._fit_to_content(generation))
+                img.thumbnail((PREVIEW_W, PREVIEW_H), PIL.Image.Resampling.LANCZOS)
+                self.after(0, lambda i=idx, im=img: self._on_thumbnail_ready(i, im, generation))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_load_error(self, message: str):
-        self._loading = False
-        self.info_label.config(text="Failed to read PDF.", fg='#a02020')
-        messagebox.showerror("Insert Pages", message)
+        self.info_label.configure(text="Failed to read PDF.", text_color="#DC2626")
+        dialogs.show_error(self, "Insert Pages", message)
 
-    def _on_refs_ready(self, refs: List[PageRef], generation: int, loading_label: tk.Label):
+    def _on_refs_ready(self, refs: List[PageRef], generation: int, loading_label: ctk.CTkLabel):
         if generation != self._load_generation:
             return
         loading_label.destroy()
         self._refs = refs
         self._selected = set(range(len(refs)))  # all selected by default
-        name = os.path.basename(self.path_var.get())
-        self.info_label.config(text=f"{name} -- {len(refs)} page(s)", fg='gray30')
-        self.insert_button.config(state=tk.NORMAL if refs else tk.DISABLED)
+        name = os.path.basename(self.path_entry.get())
+        self.info_label.configure(text=f"{name} -- {len(refs)} page(s)", text_color=TEXT_SECONDARY)
+        self.insert_button.configure(state="normal" if refs else "disabled")
         self._update_selection_label()
 
-    def _add_thumbnail(self, idx: int, pil_image: PIL.Image.Image, generation: int):
+        for idx in range(len(refs)):
+            card = PageCard(self.gallery, idx + 1, idx in self._selected,
+                             on_toggle=self._on_card_toggled)
+            self.cards[idx] = card
+        self._relayout_grid()
+
+    def _on_thumbnail_ready(self, idx: int, pil_image: PIL.Image.Image, generation: int):
         if generation != self._load_generation:
             return
-        photo = PIL.ImageTk.PhotoImage(pil_image)
-        # Dimmed/grayscale twin, shown when this page is NOT selected, so
-        # selection state is visible in the image itself, not just a thin
-        # border -- unmistakable even at a glance across a full grid.
-        dimmed_src = PIL.ImageOps.grayscale(pil_image).convert('RGB')
-        dimmed_src = PIL.ImageEnhance.Brightness(dimmed_src).enhance(1.5)  # washed-out, not just dark
-        dimmed_photo = PIL.ImageTk.PhotoImage(dimmed_src)
+        card = self.cards.get(idx)
+        if card:
+            card.set_thumbnail(pil_image)
 
-        row, col = divmod(idx, _GRID_COLUMNS)
-        frame = tk.Frame(self.grid_frame, bg=_SELECTED_BORDER, bd=4, relief=tk.SOLID)
-        frame.grid(row=row, column=col, padx=6, pady=6)
+    # ---------------------------------------------------------------- responsive grid
 
-        header = tk.Frame(frame, bg=_SELECTED_BORDER)
-        header.pack(fill=tk.X)
-        check_lbl = tk.Label(header, text=_CHECK_ON, font=('Segoe UI Symbol', 11),
-                              bg=_SELECTED_BORDER, fg='white')
-        check_lbl.pack(side=tk.LEFT, padx=(4, 2), pady=1)
-        page_lbl = tk.Label(header, text=f"Page {idx + 1}", bg=_SELECTED_BORDER, fg='white',
-                             font=('Arial', 8, 'bold'))
-        page_lbl.pack(side=tk.LEFT, pady=1)
+    def _on_gallery_resize(self, event):
+        columns = max(1, event.width // CARD_W)
+        if columns != self._columns:
+            self._columns = columns
+            self._relayout_grid()
 
-        img_lbl = tk.Label(frame, image=photo, bg='white')
-        img_lbl.pack(padx=2, pady=(0, 2))
+    def _relayout_grid(self):
+        if not self.cards:
+            return
+        for col in range(self._columns):
+            self.gallery.columnconfigure(col, weight=1, uniform="page_card")
+        for idx, card in self.cards.items():
+            row, col = divmod(idx, self._columns)
+            card.grid(row=row, column=col, padx=6, pady=6)
 
-        for widget in (frame, header, check_lbl, page_lbl, img_lbl):
-            widget.bind("<Button-1>", lambda e, i=idx: self._toggle_page(i))
+    # ---------------------------------------------------------------- selection
 
-        self._thumb_frames[idx] = frame
-        self._thumb_labels[idx] = img_lbl
-        self._thumb_checks[idx] = check_lbl
-        self._thumb_page_labels[idx] = page_lbl
-        self._thumb_images[idx] = photo
-        self._thumb_images_dim[idx] = dimmed_photo
-        self._refresh_thumbnail_style(idx)
-
-    def _toggle_page(self, idx: int):
+    def _on_card_toggled(self, page_num: int):
+        idx = page_num - 1
         if idx in self._selected:
             self._selected.discard(idx)
         else:
             self._selected.add(idx)
-        self._refresh_thumbnail_style(idx)
         self._update_selection_label()
-
-    def _refresh_thumbnail_style(self, idx: int):
-        frame = self._thumb_frames.get(idx)
-        if not frame:
-            return
-        selected = idx in self._selected
-        border = _SELECTED_BORDER if selected else _UNSELECTED_BORDER
-
-        frame.config(bg=border, bd=4 if selected else 1)
-        for child in frame.winfo_children():
-            if isinstance(child, tk.Frame):
-                child.config(bg=border)  # the header strip
-
-        self._thumb_checks[idx].config(
-            text=_CHECK_ON if selected else _CHECK_OFF,
-            bg=border, fg='white' if selected else '#666666')
-        self._thumb_page_labels[idx].config(bg=border, fg='white' if selected else '#666666')
-        self._thumb_labels[idx].config(
-            image=self._thumb_images[idx] if selected else self._thumb_images_dim[idx])
 
     def _update_selection_label(self):
         total = len(self._refs)
         count = len(self._selected)
-        self.selection_label.config(text=f"{count} of {total} page(s) selected" if total else "")
-        self.insert_button.config(state=tk.NORMAL if count else tk.DISABLED)
+        self.selection_label.configure(text=f"{count} of {total} page(s) selected" if total else "")
+        self.insert_button.configure(state="normal" if count else "disabled")
 
     def _select_all(self):
         self._selected = set(range(len(self._refs)))
-        for idx in self._thumb_frames:
-            self._refresh_thumbnail_style(idx)
+        for idx, card in self.cards.items():
+            card.set_selected(True)
         self._update_selection_label()
 
     def _select_none(self):
         self._selected = set()
-        for idx in self._thumb_frames:
-            self._refresh_thumbnail_style(idx)
+        for idx, card in self.cards.items():
+            card.set_selected(False)
         self._update_selection_label()
 
     def _apply_quick_range(self):
         if not self._refs:
             return
         try:
-            selected = parse_page_range(self.range_var.get(), len(self._refs))
+            selected = parse_page_range(self.range_entry.get(), len(self._refs))
         except ValueError as e:
-            messagebox.showerror("Insert Pages", str(e))
+            dialogs.show_error(self, "Insert Pages", str(e))
             return
         self._selected = {p - 1 for p in selected}
-        for idx in self._thumb_frames:
-            self._refresh_thumbnail_style(idx)
+        for idx, card in self.cards.items():
+            card.set_selected(idx in self._selected)
         self._update_selection_label()
+
+    # ---------------------------------------------------------------- actions
 
     def _start_insert(self):
         if not self._selected or not self._refs:
@@ -371,39 +427,3 @@ class InsertPagesDialog(tk.Toplevel):
         chosen = [self._refs[i] for i in sorted(self._selected)]
         self.on_insert(chosen)
         self.destroy()
-
-    def _fit_to_content(self, generation: int):
-        """Once every thumbnail has finished loading, resize the window to
-        actually match the page grid, both height AND width -- a 6-page
-        source left most of the fixed 680px-tall window as dead empty
-        space below the grid; keeping width fixed at an arbitrary 600px
-        left an equally dead empty strip to the right of a 4-column grid
-        that only needs ~450px (the canvas was stretching to fill that
-        unused width, visible as blank gray space next to the thumbnails).
-        A 60-page source should offer a comfortably-sized scrollable
-        viewport rather than trying to show every row at once.
-        """
-        if generation != self._load_generation:
-            return  # a newer load superseded this one
-
-        self.update_idletasks()
-        top_h = self._top_frame.winfo_reqheight()
-        bottom_h = self._bottom_frame.winfo_reqheight()
-        content_h = self.grid_frame.winfo_reqheight()
-        content_w = self.grid_frame.winfo_reqwidth()
-
-        min_grid_h, max_grid_h = 150, 420
-        grid_h = max(min_grid_h, min(content_h, max_grid_h))
-
-        # Width: match the grid's actual natural content width (however
-        # many columns' worth of thumbnails that really is) plus a fixed
-        # allowance for the vertical scrollbar and the grid's own border/
-        # the dialog's outer padding -- not an arbitrary fixed value.
-        scrollbar_and_border_overhead = 40
-        min_w = 420
-        width = max(min_w, content_w + scrollbar_and_border_overhead,
-                    self._top_frame.winfo_reqwidth())
-
-        height = top_h + grid_h + bottom_h + 40  # padding/border fudge between sections
-
-        center_window(self, self.master, width, height)

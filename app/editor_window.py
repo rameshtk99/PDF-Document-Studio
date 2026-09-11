@@ -20,9 +20,11 @@ import os
 import tempfile
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog
 from pathlib import Path
 from typing import Optional
+
+import customtkinter as ctk
 
 from models import Document
 from pdf import PDFLoader, ImageManager, ImagePlacement, DocumentExporter
@@ -30,6 +32,9 @@ from viewer import PDFViewerWidget
 from utils.project_manager import ProjectManager
 from utils.constants import PROJECT_ROOT
 from utils.ui_helpers import center_window
+from utils import ui_theme
+from utils.ui_theme import apply_base_theme
+from utils.widgets import create_button, create_icon_button, vertical_separator, SegmentedTabs
 
 from app.tools_panel import ToolsPanel
 from app.quick_footer_panel import QuickFooterPanel
@@ -42,6 +47,7 @@ from app.image_overlay import ImageOverlayController, ImagePropertiesPanel
 from app.compress_dialog import CompressDialog
 from app.insert_pages_dialog import InsertPagesDialog
 from app.footer_preview import FooterPreviewController
+from app import modern_dialogs as dialogs
 
 _FIELDS_THAT_EDIT_TEXT = ('Entry', 'TEntry', 'TCombobox', 'Spinbox', 'Text')
 
@@ -50,6 +56,7 @@ class PDFEditorApp:
     """Main integrated editor window"""
 
     def __init__(self, root):
+        apply_base_theme()
         self.root = root
         root.title("PDF Document Studio")
         self._set_initial_geometry(root)
@@ -100,36 +107,144 @@ class PDFEditorApp:
         edit_menu.add_command(label="Ungroup Images", command=self._ungroup_images, accelerator="Ctrl+Shift+G")
         menubar.add_cascade(label="Edit", menu=edit_menu)
 
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="Zoom In", command=lambda: self.pdf_viewer.zoom_in(), accelerator="Ctrl++")
+        view_menu.add_command(label="Zoom Out", command=lambda: self.pdf_viewer.zoom_out(), accelerator="Ctrl+-")
+        view_menu.add_command(label="Actual Size (100%)", command=lambda: self.pdf_viewer.zoom_100(), accelerator="Ctrl+0")
+        view_menu.add_separator()
+        view_menu.add_command(label="Fit Page", command=lambda: self.pdf_viewer.fit_page())
+        view_menu.add_command(label="Fit Width", command=lambda: self.pdf_viewer.fit_width())
+        view_menu.add_separator()
+        view_menu.add_command(label="Next Page", command=lambda: self.pdf_viewer.next_page(), accelerator="Page Down")
+        view_menu.add_command(label="Previous Page", command=lambda: self.pdf_viewer.prev_page(), accelerator="Page Up")
+        menubar.add_cascade(label="View", menu=view_menu)
+
         insert_menu = tk.Menu(menubar, tearoff=0)
         insert_menu.add_command(label="Add Image / Stamp...", command=self.add_image)
         insert_menu.add_command(label="Insert Page(s) from PDF...", command=self.insert_pages_from_pdf)
         menubar.add_cascade(label="Insert", menu=insert_menu)
 
+        pages_menu = tk.Menu(menubar, tearoff=0)
+        pages_menu.add_command(label="Move Page Up", command=lambda: self._menu_move_current(-1))
+        pages_menu.add_command(label="Move Page Down", command=lambda: self._menu_move_current(1))
+        pages_menu.add_separator()
+        pages_menu.add_command(label="Insert Page(s) Before...", command=lambda: self._open_insert_pages_dialog(
+            at_page=self.pdf_viewer.current_page) if self.document else None)
+        pages_menu.add_command(label="Insert Page(s) After...", command=lambda: self._open_insert_pages_dialog(
+            at_page=self.pdf_viewer.current_page + 1) if self.document else None)
+        pages_menu.add_separator()
+        pages_menu.add_command(label="Delete Current Page", command=lambda: self._confirm_and_delete_page(
+            self.pdf_viewer.current_page) if self.document else None, accelerator="Delete")
+        menubar.add_cascade(label="Pages", menu=pages_menu)
+
         tools_menu = tk.Menu(menubar, tearoff=0)
         tools_menu.add_command(label="Simple Footer Tool (Classic)...", command=self.open_classic_tool)
         menubar.add_cascade(label="Tools", menu=tools_menu)
 
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
+        help_menu.add_command(label="About PDF Document Studio", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
         self.root.config(menu=menubar)
 
+    def _menu_move_current(self, delta: int):
+        if not self.document:
+            return
+        p = self.pdf_viewer.current_page
+        self._execute_move_page(p, p + delta)
+
+    def _show_shortcuts(self):
+        dialogs.show_info(self.root, "Keyboard Shortcuts", (
+            "Ctrl+O   Open PDF\n"
+            "Ctrl+S   Save Project\n"
+            "Ctrl+Shift+S   Save Project As\n"
+            "Ctrl+E   Export PDF\n"
+            "Ctrl+Z / Ctrl+Y   Undo / Redo\n"
+            "Ctrl+C / Ctrl+V   Copy / Paste Image(s)\n"
+            "Ctrl+G / Ctrl+Shift+G   Group / Ungroup Images\n"
+            "Delete   Delete Selected Image\n"
+            "Ctrl++ / Ctrl+-   Zoom In / Out\n"
+            "Ctrl+0   Actual Size\n"
+            "Page Up / Page Down   Previous / Next Page"
+        ))
+
+    def _show_about(self):
+        dialogs.show_info(self.root, "About PDF Document Studio", (
+            "PDF Document Studio\n\n"
+            "A visual PDF editor for footers, page management, image "
+            "stamps, and compression."
+        ))
+
     def _build_toolbar(self):
-        toolbar = tk.Frame(self.root, bg='lightgray')
+        toolbar = ctk.CTkFrame(self.root, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=48)
         toolbar.grid(row=0, column=0, sticky='ew')
+        toolbar.grid_propagate(False)
 
-        def add_button(text, command, doc_required=False):
-            b = tk.Button(toolbar, text=text, command=command)
-            b.pack(side=tk.LEFT, padx=2, pady=2)
-            if doc_required:
-                self._doc_buttons.append(b)
-            return b
+        # No app name here -- the OS title bar already says it, and
+        # repeating it just spends toolbar width on something the user
+        # can't act on. The document name lives in the status bar.
+        def group(pad_left: int = 0):
+            f = ctk.CTkFrame(toolbar, fg_color="transparent")
+            f.pack(side=tk.LEFT, padx=(pad_left, 0))
+            return f
 
-        self.open_button = add_button("Open PDF", self.open_pdf)
-        add_button("Save Project", self.save_project, doc_required=True)
-        add_button("Export PDF", self.export_pdf, doc_required=True)
-        tk.Label(toolbar, text="|", bg='lightgray').pack(side=tk.LEFT, padx=4)
-        add_button("Undo", self.undo, doc_required=True)
-        add_button("Redo", self.redo, doc_required=True)
-        tk.Label(toolbar, text="|", bg='lightgray').pack(side=tk.LEFT, padx=4)
-        add_button("Add Image", self.add_image, doc_required=True)
+        # ---- File actions: visual hierarchy -- Export is the one
+        # standout primary action, Open/Save are secondary. ------------
+        file_group = group(pad_left=ui_theme.SPACE_12)
+        self.open_button = create_button(
+            file_group, text="Open PDF", icon="open", command=self.open_pdf,
+            variant="secondary", height=32, tooltip="Open a PDF file (Ctrl+O)")
+        self.open_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        save_btn = create_button(
+            file_group, text="Save Project", icon="save", command=self.save_project,
+            variant="secondary", height=32, tooltip="Save project (Ctrl+S)")
+        save_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self._doc_buttons.append(save_btn)
+
+        export_btn = create_button(
+            file_group, text="Export PDF", icon="export", command=self.export_pdf,
+            variant="primary", height=32, tooltip="Export the finished PDF (Ctrl+E)")
+        export_btn.pack(side=tk.LEFT)
+        self._doc_buttons.append(export_btn)
+
+        vertical_separator(toolbar, height=24)
+
+        # ---- Editing: compact icon-only utility actions. --------------
+        edit_group = group()
+        undo_btn = create_icon_button(edit_group, "undo", command=self.undo,
+                                       tooltip="Undo (Ctrl+Z)", height=32, width=32)
+        undo_btn.pack(side=tk.LEFT, padx=(0, 2))
+        self._doc_buttons.append(undo_btn)
+
+        redo_btn = create_icon_button(edit_group, "redo", command=self.redo,
+                                       tooltip="Redo (Ctrl+Y)", height=32, width=32)
+        redo_btn.pack(side=tk.LEFT)
+        self._doc_buttons.append(redo_btn)
+
+        vertical_separator(toolbar, height=24)
+
+        # ---- Insert: secondary action. ---------------------------------
+        insert_group = group()
+        add_image_btn = create_button(
+            insert_group, text="Add Image", icon="add_image", command=self.add_image,
+            variant="secondary", height=32, tooltip="Place an image or stamp on the current page")
+        add_image_btn.pack(side=tk.LEFT)
+        self._doc_buttons.append(add_image_btn)
+
+        # ---- View: panel toggles, right-aligned. Kept apart from the
+        # document actions on the left -- these change the workspace, not
+        # the document. ---------------------------------------------------
+        self.right_panel_button = create_icon_button(
+            toolbar, "panel_right", command=self.toggle_side_panel,
+            tooltip="Hide properties panel", height=32, width=32, variant="tertiary")
+        self.right_panel_button.pack(side=tk.RIGHT, padx=(0, ui_theme.SPACE_12))
+
+        self.left_panel_button = create_icon_button(
+            toolbar, "panel_left", command=self.toggle_pages_panel,
+            tooltip="Hide pages panel", height=32, width=32, variant="tertiary")
+        self.left_panel_button.pack(side=tk.RIGHT, padx=(0, 2))
 
     def _build_layout(self):
         # Grid (not pack) on self.root for the toolbar/content/status-bar
@@ -140,41 +255,46 @@ class PDFEditorApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
-        content = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        content = tk.PanedWindow(
+            self.root, orient=tk.HORIZONTAL, sashrelief=tk.FLAT, sashwidth=6,
+            bg=ui_theme.resolve(ui_theme.BG_APP), bd=0,
+            background=ui_theme.resolve(ui_theme.BG_APP))
         content.grid(row=1, column=0, sticky='nsew')
 
         self.pdf_viewer = PDFViewerWidget(
             content, on_page_changed=self._on_page_changed, on_after_render=self._on_after_render,
             on_page_action=self._on_page_action,
             on_page_reorder=self._execute_move_page,
+            on_open_requested=self.open_pdf,
         )
         content.add(self.pdf_viewer, stretch="always", width=850)
 
         self.footer_preview = FooterPreviewController(self.pdf_viewer)
 
-        side_panel = tk.Frame(content)
+        side_panel = tk.Frame(content, bg=ui_theme.resolve(ui_theme.BG_APP))
         content.add(side_panel, width=340)
 
-        self.side_notebook = ttk.Notebook(side_panel)
-        self.side_notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.side_notebook = SegmentedTabs(side_panel, fg_color=ui_theme.BG_APP)
 
+        tab_footer = self.side_notebook.add("Quick Footer")
         self.quick_footer_panel = QuickFooterPanel(
-            self.side_notebook, undo_manager=self.undo_manager,
+            tab_footer, undo_manager=self.undo_manager,
             on_preview_changed=self._on_footer_preview_changed,
             on_export_requested=self.export_pdf,
             on_compress_requested=self.compress_pdf,
         )
         self.quick_footer_panel.get_current_page = lambda: self.pdf_viewer.current_page
-        self.side_notebook.add(self.quick_footer_panel, text="Quick Footer")
+        self.quick_footer_panel.pack(fill=tk.BOTH, expand=True)
 
+        tab_tools = self.side_notebook.add("Tools")
         self.tools_panel = ToolsPanel(
-            self.side_notebook,
+            tab_tools,
             on_compress=self.compress_pdf,
             on_add_image=self.add_image,
             on_insert_pages=self.insert_pages_from_pdf,
             on_export=self.export_pdf,
         )
-        self.side_notebook.add(self.tools_panel, text="Tools")
+        self.tools_panel.pack(fill=tk.BOTH, expand=True)
 
         self.image_overlay = ImageOverlayController(
             self.pdf_viewer, self.image_manager, self.image_editor, self.undo_manager,
@@ -186,18 +306,75 @@ class PDFEditorApp:
             on_applied=self.image_overlay.redraw,
             on_selection_changed=self.image_overlay.select,
         )
-        self.image_properties.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Packed BOTTOM/no-expand before the (TOP, expand=True) notebook
+        # below -- this way Image Properties keeps its natural content
+        # height as a fixed bottom dock, and Quick Footer/Tools get
+        # whatever vertical space is left, instead of the two splitting
+        # the panel 50/50.
+        self.image_properties.pack(side=tk.BOTTOM, fill=tk.X)
+        self.side_notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Kept for toggle_side_panel(), which removes/re-adds this pane.
+        self._content_panes = content
+        self._side_panel = side_panel
+        self._side_panel_width = 340
+        self._side_panel_hidden = False
+
+    # ---- panel visibility -------------------------------------------------
+
+    def toggle_side_panel(self):
+        """Show/hide the whole right-hand properties column.
+
+        PanedWindow has no "hide this pane" -- forget() drops it and
+        add() puts it back at the end, which is the right place anyway
+        since it's the last pane. The width it had is remembered so the
+        pane comes back the size the user left it, not the default.
+        """
+        if self._side_panel_hidden:
+            self._content_panes.add(self._side_panel, width=self._side_panel_width)
+        else:
+            try:
+                self._side_panel_width = max(200, self._side_panel.winfo_width())
+            except tk.TclError:
+                pass
+            self._content_panes.forget(self._side_panel)
+        self._side_panel_hidden = not self._side_panel_hidden
+        self._sync_panel_buttons()
+        # The workspace just gained/lost the panel's width -- refit and
+        # recenter the page for it.
+        self.pdf_viewer.refresh_layout()
+
+    def toggle_pages_panel(self):
+        self.pdf_viewer.toggle_thumbnails()
+        self._sync_panel_buttons()
+
+    def _sync_panel_buttons(self):
+        """Keep the toolbar toggles' tooltips honest about what they do next."""
+        pages_hidden = self.pdf_viewer.thumbnails_collapsed()
+        self.left_panel_button.tooltip.set_text(
+            "Show pages panel" if pages_hidden else "Hide pages panel")
+        self.right_panel_button.tooltip.set_text(
+            "Show properties panel" if self._side_panel_hidden else "Hide properties panel")
 
     def _build_status_bar(self):
-        self.status_bar = tk.Label(self.root, text="No document loaded", anchor='w',
-                                    bd=1, relief=tk.SUNKEN)
-        self.status_bar.grid(row=2, column=0, sticky='ew')
+        bar = ctk.CTkFrame(self.root, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=26)
+        bar.grid(row=2, column=0, sticky='ew')
+        bar.grid_propagate(False)
+        self.status_bar = ctk.CTkLabel(bar, text="No document loaded", anchor='w',
+                                        font=ui_theme.font(11), text_color=ui_theme.TEXT_SECONDARY)
+        self.status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=ui_theme.PAD)
 
-        # Thin indeterminate progress bar, animated only while something
-        # is loading/exporting -- a clearer "working" signal than the
-        # status text alone, without touching the mouse cursor.
-        self.busy_bar = ttk.Progressbar(self.root, mode='indeterminate', length=200)
+        # Thin progress bar, animated only while something is loading/
+        # exporting -- a clearer "working" signal than the status text
+        # alone. CTkProgressBar has no native indeterminate mode, so
+        # busy state is faked with a repeating sweep (same technique as
+        # CompressDialog's progress bar).
+        self.busy_bar = ctk.CTkProgressBar(self.root, height=4, corner_radius=2,
+                                            progress_color=ui_theme.ACCENT)
+        self.busy_bar.set(0)
         self.busy_bar.grid(row=3, column=0, sticky='ew')
+        self._busy_job = None
+        self._busy_value = 0.0
 
     def _bind_shortcuts(self):
         self.root.bind_all('<Control-z>', lambda e: self.undo())
@@ -216,6 +393,13 @@ class PDFEditorApp:
         self.root.bind_all('<Control-v>', self._paste_images)
         self.root.bind_all('<Control-g>', lambda e: self._group_images_if_canvas(e))
         self.root.bind_all('<Control-G>', lambda e: self._ungroup_images_if_canvas(e))
+        # Zoom / page navigation -- '=' fires for both Ctrl+= and Ctrl+Shift+=
+        # (i.e. Ctrl++ on most keyboard layouts, no separate Shift binding needed).
+        self.root.bind_all('<Control-equal>', lambda e: self.pdf_viewer.zoom_in())
+        self.root.bind_all('<Control-minus>', lambda e: self.pdf_viewer.zoom_out())
+        self.root.bind_all('<Control-0>', lambda e: self.pdf_viewer.zoom_100())
+        self.root.bind_all('<Prior>', self._prev_page_if_no_text_focus)   # Page Up
+        self.root.bind_all('<Next>', self._next_page_if_no_text_focus)    # Page Down
 
     # ---- document lifecycle ---------------------------------------------
 
@@ -294,7 +478,7 @@ class PDFEditorApp:
 
     def _on_load_error(self, title: str, message: str):
         self._end_loading()
-        messagebox.showerror(title, message)
+        dialogs.show_error(self.root, title, message)
 
     def save_project(self):
         if not self.document:
@@ -306,7 +490,7 @@ class PDFEditorApp:
             self.project_manager.save(self.document)
             self._update_status()
         except Exception as e:
-            messagebox.showerror("Save Failed", str(e))
+            dialogs.show_error(self.root, "Save Failed", str(e))
 
     def save_project_as(self):
         if not self.document:
@@ -322,9 +506,9 @@ class PDFEditorApp:
             self.project_manager.save_as(Path(path), self.document)
             self.document.set_project_path(path)
             self._update_status()
-            messagebox.showinfo("Saved", f"Project saved to:\n{path}")
+            dialogs.show_info(self.root, "Saved", f"Project saved to:\n{path}")
         except Exception as e:
-            messagebox.showerror("Save Failed", str(e))
+            dialogs.show_error(self.root, "Save Failed", str(e))
 
     def export_pdf(self):
         if not self.document:
@@ -357,11 +541,11 @@ class PDFEditorApp:
                         f"layout adjustment to fit their footer: {result.adjusted_pages}")
         if result.warnings:
             message += "\n\nWarnings:\n" + "\n".join(result.warnings)
-        messagebox.showinfo("Export Complete", message)
+        dialogs.show_info(self.root, "Export Complete", message)
 
     def _on_export_error(self, message):
         self._set_ui_busy(False)
-        messagebox.showerror("Export Failed", message)
+        dialogs.show_error(self.root, "Export Failed", message)
 
     def open_compress_dialog(self):
         current_path = self.document.pdf_path if self.document else None
@@ -403,7 +587,7 @@ class PDFEditorApp:
             os.remove(tmp_path)
         except OSError:
             pass
-        messagebox.showerror("Compress PDF", message)
+        dialogs.show_error(self.root, "Compress PDF", message)
 
     # ---- page management (delete / move / insert / combine) -----------------
 
@@ -435,10 +619,11 @@ class PDFEditorApp:
         if not self.document:
             return
         if self.document.page_count <= 1:
-            messagebox.showwarning("Delete Page", "Cannot delete the only page in the document.")
+            dialogs.show_error(self.root, "Delete Page", "Cannot delete the only page in the document.")
             return
-        if not messagebox.askyesno(
-                "Delete Page", f"Delete page {page_num}?\n\nYou can undo this with Ctrl+Z."):
+        if not dialogs.ask_yes_no(
+                self.root, "Delete Page", f"Delete page {page_num}?\n\nYou can undo this with Ctrl+Z.",
+                danger=True):
             return
         self.undo_manager.execute(DeletePageCommand(self.document, page_num - 1))
         self.document.set_modified(True)
@@ -449,7 +634,7 @@ class PDFEditorApp:
         (unlike the context menu's Insert Before/After), so default to
         right after whichever page is currently in view."""
         if not self.document:
-            messagebox.showwarning("Insert Pages", "Open a PDF first.")
+            dialogs.show_error(self.root, "Insert Pages", "Open a PDF first.")
             return
         self._open_insert_pages_dialog(at_page=self.pdf_viewer.current_page + 1)
 
@@ -525,7 +710,7 @@ class PDFEditorApp:
 
     def add_image(self):
         if not self.document:
-            messagebox.showwarning("No Document", "Open a PDF first.")
+            dialogs.show_error(self.root, "No Document", "Open a PDF first.")
             return
         path = filedialog.askopenfilename(
             title="Select Image / Stamp",
@@ -535,7 +720,7 @@ class PDFEditorApp:
 
         valid, error = ImageManager.validate_image_file(path)
         if not valid:
-            messagebox.showerror("Invalid Image", error)
+            dialogs.show_error(self.root, "Invalid Image", error)
             return
 
         page_num = self.pdf_viewer.current_page
@@ -560,6 +745,18 @@ class PDFEditorApp:
             self.image_overlay.select(cmd.image_id)
         self.image_overlay.redraw()
         self._update_status()
+
+    def _prev_page_if_no_text_focus(self, event=None):
+        focused = self.root.focus_get()
+        if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
+            return
+        self.pdf_viewer.prev_page()
+
+    def _next_page_if_no_text_focus(self, event=None):
+        focused = self.root.focus_get()
+        if focused is not None and focused.winfo_class() in _FIELDS_THAT_EDIT_TEXT:
+            return
+        self.pdf_viewer.next_page()
 
     def _delete_selected_image(self, event=None):
         focused = self.root.focus_get()
@@ -662,18 +859,35 @@ class PDFEditorApp:
     def _set_document_dependent_state(self, enabled: bool):
         state = tk.NORMAL if enabled else tk.DISABLED
         for b in self._doc_buttons:
-            b.config(state=state)
+            b.configure(state=state)
 
     def _set_ui_busy(self, busy: bool, message: str = ""):
-        self.status_bar.config(
-            text=("⏳ " + message) if busy else self._status_text(),
-            fg='#8a5a00' if busy else 'black',
+        self.status_bar.configure(
+            text=message if busy else self._status_text(),
+            text_color='#C9962B' if busy else ui_theme.TEXT_SECONDARY,
         )
         if busy:
-            self.busy_bar.start(12)
+            self._start_busy_animation()
         else:
-            self.busy_bar.stop()
+            self._stop_busy_animation()
         self.root.update_idletasks()
+
+    def _start_busy_animation(self):
+        def step():
+            self._busy_value = (self._busy_value + 0.05) % 1.0
+            self.busy_bar.set(self._busy_value)
+            self._busy_job = self.root.after(16, step)
+        if self._busy_job is None:
+            step()
+
+    def _stop_busy_animation(self):
+        if self._busy_job is not None:
+            try:
+                self.root.after_cancel(self._busy_job)
+            except tk.TclError:
+                pass
+            self._busy_job = None
+        self.busy_bar.set(0)
 
     def _begin_loading(self, message: str):
         """Show a visible loading indicator (status text + hourglass
@@ -682,12 +896,12 @@ class PDFEditorApp:
         whole window with zero feedback, which looked like it had hung.
         """
         self._loading = True
-        self.open_button.config(state=tk.DISABLED)
+        self.open_button.configure(state=tk.DISABLED)
         self._set_ui_busy(True, message)
 
     def _end_loading(self):
         self._loading = False
-        self.open_button.config(state=tk.NORMAL)
+        self.open_button.configure(state=tk.NORMAL)
         self._set_ui_busy(False)
 
     def _status_text(self) -> str:
@@ -701,4 +915,4 @@ class PDFEditorApp:
         return f"{name}{modified}  |  Page {page} of {total}  |  Zoom {zoom}"
 
     def _update_status(self):
-        self.status_bar.config(text=self._status_text())
+        self.status_bar.configure(text=self._status_text())

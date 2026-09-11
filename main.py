@@ -16,7 +16,6 @@ Existing CLI and GUI functionality is fully preserved.
 import os
 import sys
 
-# Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -27,41 +26,23 @@ from utils.fonts import register_custom_fonts
 
 def main():
     """Main application entry point"""
-    
-    # Initialize configuration and check dependencies
     config = AppConfig()
-    
-    # Ensure dependencies are available
     config.dep_checker.ensure_dependencies()
-    
-    # Register custom fonts (Nepali, etc.)
     register_custom_fonts()
-    
-    # Check if CLI arguments are provided (run CLI mode)
-    # Skip the first argument which is the script name
+
     if len(sys.argv) > 1:
-        # CLI Mode - arguments provided
         from batch import run_cli
         run_cli()
     elif config.gui_available:
-        # GUI Mode
         run_gui_mode()
     else:
-        # No GUI and no CLI args - print help
         from batch import run_cli
         run_cli()
 
 
 def _fix_windows_taskbar_icon():
-    """On Windows, a python.exe-hosted GUI app shows python.exe's own
-    icon in the taskbar instead of the window's icon, because Explorer
-    groups taskbar entries by process AppUserModelID, which defaults to
-    python.exe's. Giving this process its own explicit AppUserModelID
-    (before any window is created) makes Explorer treat it as its own
-    app, so the window's actual icon (see PDFEditorApp/FooterApp's
-    root.iconbitmap(logo.ico)) shows in the taskbar too, not just the
-    title bar.
-    """
+    """Gives this process its own AppUserModelID so Explorer shows the
+    window's own icon in the taskbar instead of python.exe's."""
     if sys.platform != 'win32':
         return
     try:
@@ -77,10 +58,10 @@ def run_gui_mode():
     try:
         _fix_windows_taskbar_icon()
 
-        import tkinter as tk
+        import customtkinter as ctk
         from app import PDFEditorApp
 
-        root = tk.Tk()
+        root = ctk.CTk()
         app = PDFEditorApp(root)
         root.mainloop()
     except ImportError as e:

@@ -57,7 +57,13 @@ def center_window(win, parent, width: int, height: int, margin: int = 80):
     x = px + (pw - width) // 2
     y = py + (ph - height) // 2
 
-    x = min(max(0, x), max(0, screen_w - width))
-    y = min(max(0, y), max(0, screen_h - height))
+    # Reserve half the margin at the trailing edge too (not just via the
+    # size clamp above) -- winfo_screenheight() reports the full display
+    # resolution, not the work area excluding the Windows taskbar, so a
+    # dialog whose height fits the raw screen size could still land with
+    # its bottom edge (often the primary/Cancel buttons) hidden behind it.
+    edge_reserve = margin // 2
+    x = min(max(0, x), max(0, screen_w - width - edge_reserve))
+    y = min(max(0, y), max(0, screen_h - height - edge_reserve))
 
     win.geometry(f"{width}x{height}+{x}+{y}")
