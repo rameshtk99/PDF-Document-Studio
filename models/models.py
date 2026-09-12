@@ -246,6 +246,40 @@ class Document:
         self.page_count = len(self.pages)
         self._modified = True
 
+    def reorder_pages(self, new_order: List[int]):
+        """Rebuild the page list from `new_order` (0-based indices into
+        the current list). Indices left out are dropped, so this covers
+        both reordering and deleting; configs follow their page."""
+        n = len(self.pages)
+        if any(not (0 <= i < n) for i in new_order) or len(set(new_order)) != len(new_order):
+            raise ValueError("new_order must be unique indices into the current pages")
+
+        self.pages = [self.pages[i] for i in new_order]
+        old_to_new: Dict[int, Optional[int]] = {i + 1: None for i in range(n)}
+        for new_idx, old_idx in enumerate(new_order):
+            old_to_new[old_idx + 1] = new_idx + 1
+        self._renumber_page_configs(old_to_new)
+
+        self.page_count = len(self.pages)
+        self._modified = True
+
+    def file_groups(self) -> List[Dict[str, Any]]:
+        """Pages grouped by source file, ordered by first appearance.
+
+        A file's pages can end up scattered after page-level moves; they
+        still report as one group, which is what makes a file-level
+        reorder or delete mean "all of this file's pages".
+        """
+        groups: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for index, ref in enumerate(self.pages):
+            path = ref.source_path
+            if path not in groups:
+                groups[path] = {'source_path': path, 'page_indices': []}
+                order.append(path)
+            groups[path]['page_indices'].append(index)
+        return [groups[p] for p in order]
+
     def is_modified(self) -> bool:
         """Check if document has unsaved changes"""
         return self._modified

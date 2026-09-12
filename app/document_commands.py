@@ -623,3 +623,83 @@ class InsertPagesCommand(Command):
 
     def redo(self):
         self.execute()
+
+
+class ReorderFilesCommand(Command):
+    """Move a whole source file's pages to a new position in the file
+    order, as one undo step.
+
+    Works on the page list directly rather than as a run of MovePage
+    steps: a file's pages need not be contiguous, and the intermediate
+    states of a page-by-page walk aren't meaningful to undo into.
+    """
+
+    def __init__(self, document: Document, from_index: int, to_index: int):
+        super().__init__()
+        self.document = document
+        self.from_index = from_index
+        self.to_index = to_index
+        self.affects_page_structure = True
+        self._before_pages: Optional[List[PageRef]] = None
+        self._before_configs: Optional[Dict[int, PageConfig]] = None
+        self.description = f"Move file {from_index + 1} to position {to_index + 1}"
+
+    def _snapshot(self):
+        self._before_pages = list(self.document.pages)
+        self._before_configs = dict(self.document.page_configs)
+
+    def execute(self):
+        self._snapshot()
+        groups = self.document.file_groups()
+        if not (0 <= self.from_index < len(groups)) or not (0 <= self.to_index < len(groups)):
+            return
+        groups.insert(self.to_index, groups.pop(self.from_index))
+        new_order = [i for group in groups for i in group['page_indices']]
+        self.document.reorder_pages(new_order)
+        self.document.set_modified(True)
+
+    def undo(self):
+        if self._before_pages is None:
+            return
+        self.document.pages = list(self._before_pages)
+        self.document.page_configs = dict(self._before_configs)
+        self.document.page_count = len(self.document.pages)
+        self.document.set_modified(True)
+
+    def redo(self):
+        self.execute()
+
+
+class DeleteFileCommand(Command):
+    """Remove every page that came from one source file, as one undo step."""
+
+    def __init__(self, document: Document, file_index: int):
+        super().__init__()
+        self.document = document
+        self.file_index = file_index
+        self.affects_page_structure = True
+        self._before_pages: Optional[List[PageRef]] = None
+        self._before_configs: Optional[Dict[int, PageConfig]] = None
+        self.description = "Remove file"
+
+    def execute(self):
+        self._before_pages = list(self.document.pages)
+        self._before_configs = dict(self.document.page_configs)
+        groups = self.document.file_groups()
+        if not (0 <= self.file_index < len(groups)):
+            return
+        doomed = set(groups[self.file_index]['page_indices'])
+        keep = [i for i in range(len(self.document.pages)) if i not in doomed]
+        self.document.reorder_pages(keep)
+        self.document.set_modified(True)
+
+    def undo(self):
+        if self._before_pages is None:
+            return
+        self.document.pages = list(self._before_pages)
+        self.document.page_configs = dict(self._before_configs)
+        self.document.page_count = len(self.document.pages)
+        self.document.set_modified(True)
+
+    def redo(self):
+        self.execute()

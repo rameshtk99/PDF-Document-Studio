@@ -25,14 +25,17 @@ from utils.constants import PROJECT_ROOT
 from utils.ui_helpers import center_window
 from utils import ui_theme
 from utils.ui_theme import apply_base_theme
-from utils.widgets import create_button, create_icon_button, vertical_separator, SegmentedTabs
+from utils.widgets import create_button, create_icon_button, vertical_separator
+from utils.accordion import AccordionPanel, RAIL_W
 
 from app.tools_panel import ToolsPanel
+from app.file_organizer_panel import FileOrganizerPanel
 from app.quick_footer_panel import QuickFooterPanel
 from app.image_editor import ImageEditor
 from app.undo_redo import UndoRedoManager
 from app.document_commands import (
     AddObjectCommand, DeletePageCommand, MovePageCommand, InsertPagesCommand,
+    ReorderFilesCommand, DeleteFileCommand,
 )
 from app.image_overlay import ImageOverlayController, ImagePropertiesPanel
 from app.compress_dialog import CompressDialog
@@ -265,11 +268,22 @@ class PDFEditorApp:
         side_panel = tk.Frame(content, bg=ui_theme.resolve(ui_theme.BG_APP))
         content.add(side_panel, width=340)
 
-        self.side_notebook = SegmentedTabs(side_panel, fg_color=ui_theme.BG_APP)
+        self.side_panels = AccordionPanel(
+            side_panel, on_collapsed_change=self._on_side_collapsed_change)
+        self.side_panels.pack(fill=tk.BOTH, expand=True)
 
-        tab_footer = self.side_notebook.add("Quick Footer")
+        body = self.side_panels.add("files", "File Organizer", expanded=False)
+        self.file_organizer = FileOrganizerPanel(
+            body,
+            on_reorder=self._reorder_file,
+            on_remove=self._confirm_and_remove_file,
+            on_file_selected=self._on_file_selected,
+        )
+        self.file_organizer.pack(fill=tk.BOTH, expand=True)
+
+        body = self.side_panels.add("footer", "Quick Footer", expanded=True)
         self.quick_footer_panel = QuickFooterPanel(
-            tab_footer, undo_manager=self.undo_manager,
+            body, undo_manager=self.undo_manager,
             on_preview_changed=self._on_footer_preview_changed,
             on_export_requested=self.export_pdf,
             on_compress_requested=self.compress_pdf,
@@ -280,9 +294,9 @@ class PDFEditorApp:
             lambda: self.pdf_viewer.thumbnail_panel.get_selected_pages())
         self.quick_footer_panel.pack(fill=tk.BOTH, expand=True)
 
-        tab_tools = self.side_notebook.add("Tools")
+        body = self.side_panels.add("tools", "Tools", expanded=False)
         self.tools_panel = ToolsPanel(
-            tab_tools,
+            body,
             on_compress=self.compress_pdf,
             on_add_image=self.add_image,
             on_insert_pages=self.insert_pages_from_pdf,
@@ -295,44 +309,31 @@ class PDFEditorApp:
             on_selection_changed=self._on_image_selection_changed,
         )
 
+        body = self.side_panels.add("image", "Image Properties", expanded=True)
         self.image_properties = ImagePropertiesPanel(
-            side_panel, self.undo_manager,
+            body, self.undo_manager,
             on_applied=self.image_overlay.redraw,
             on_selection_changed=self.image_overlay.select,
         )
-        # Packed BOTTOM/no-expand before the expanding notebook, so it
-        # docks at its content height instead of splitting the panel 50/50.
-        self.image_properties.pack(side=tk.BOTTOM, fill=tk.X)
-        self.side_notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.image_properties.pack(fill=tk.BOTH, expand=True)
+        # Only meaningful with something selected, so it stays out of the
+        # stack until there is.
+        self.side_panels.set_section_visible("image", False)
 
         # Kept for toggle_side_panel(), which removes/re-adds this pane.
         self._content_panes = content
         self._side_panel = side_panel
         self._side_panel_width = 340
-        self._side_panel_hidden = False
 
     # ---- panel visibility -------------------------------------------------
 
     def toggle_side_panel(self):
-        """Show/hide the right-hand properties column.
+        """Collapse the right column to its rail of panel names, or back.
 
-        PanedWindow has no "hide pane", so the pane is forgotten and
-        re-added (it's last, so order is preserved), at the width the
-        user left it.
+        The pane itself stays in the PanedWindow (only its width shrinks)
+        so the rail keeps a way back on screen.
         """
-        if self._side_panel_hidden:
-            self._content_panes.add(self._side_panel, width=self._side_panel_width)
-        else:
-            try:
-                self._side_panel_width = max(200, self._side_panel.winfo_width())
-            except tk.TclError:
-                pass
-            self._content_panes.forget(self._side_panel)
-        self._side_panel_hidden = not self._side_panel_hidden
-        self._sync_panel_buttons()
-        # The workspace just gained/lost the panel's width -- refit and
-        # recenter the page for it.
-        self.pdf_viewer.refresh_layout()
+        self.side_panels.toggle_collapsed()
 
     def toggle_pages_panel(self):
         self.pdf_viewer.toggle_thumbnails()
@@ -344,7 +345,7 @@ class PDFEditorApp:
         self.left_panel_button.tooltip.set_text(
             "Show pages panel" if pages_hidden else "Hide pages panel")
         self.right_panel_button.tooltip.set_text(
-            "Show properties panel" if self._side_panel_hidden else "Hide properties panel")
+            "Show properties panel" if self.side_panels.collapsed() else "Hide properties panel")
 
     def _build_status_bar(self):
         bar = ctk.CTkFrame(self.root, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=26)
@@ -464,6 +465,7 @@ class PDFEditorApp:
         self.image_properties.clear()
         self.pdf_viewer.clear_document()
         self.quick_footer_panel.load_document(None)
+        self.file_organizer.load_document(None)
         self._set_document_dependent_state(False)
         self._update_status()
 
@@ -498,6 +500,7 @@ class PDFEditorApp:
 
         self.pdf_viewer.load_document(document)
         self.quick_footer_panel.load_document(document)
+        self.file_organizer.load_document(document)
         self.image_properties.set_manager_context(self.image_manager, self.pdf_viewer.current_page)
         self.image_overlay.select(None)
 
@@ -712,6 +715,7 @@ class PDFEditorApp:
         target_page = max(1, min(target_page, self.document.page_count))
         self.pdf_viewer.current_page = target_page
         self.pdf_viewer.refresh_after_page_ops(target_page)
+        self.file_organizer.refresh()
         self._on_page_changed(target_page)
 
     def open_classic_tool(self):
@@ -869,6 +873,61 @@ class PDFEditorApp:
         else:
             self.footer_preview.set_draft(draft_config, page_number)
 
+    # ---- file-level organisation -----------------------------------------
+
+    def _reorder_file(self, from_index: int, to_index: int):
+        if not self.document or from_index == to_index:
+            return
+        self.undo_manager.execute(ReorderFilesCommand(self.document, from_index, to_index))
+        self.document.set_modified(True)
+        self._refresh_after_page_ops(target_page=1)
+
+    def _confirm_and_remove_file(self, file_index: int):
+        if not self.document:
+            return
+        groups = self.document.file_groups()
+        if not (0 <= file_index < len(groups)):
+            return
+        if len(groups) <= 1:
+            dialogs.show_error(self.root, "Remove File",
+                                "This is the only file in the document. Use File > Close "
+                                "Document to start over.")
+            return
+
+        group = groups[file_index]
+        name = os.path.basename(group['source_path']) or group['source_path']
+        count = len(group['page_indices'])
+        if not dialogs.ask_yes_no(
+                self.root, "Remove File",
+                f"Remove {name} and its {count} page{'s' if count != 1 else ''}?\n\n"
+                "You can undo this with Ctrl+Z.", danger=True):
+            return
+
+        self.undo_manager.execute(DeleteFileCommand(self.document, file_index))
+        self.document.set_modified(True)
+        self._refresh_after_page_ops(target_page=1)
+
+    def _on_file_selected(self, file_index: int):
+        """Jump the viewer to a file's first page."""
+        if not self.document:
+            return
+        groups = self.document.file_groups()
+        if 0 <= file_index < len(groups) and groups[file_index]['page_indices']:
+            self.pdf_viewer.goto_page(groups[file_index]['page_indices'][0] + 1)
+
+    def _on_side_collapsed_change(self, collapsed: bool):
+        """Shrink the pane to the rail's width when the column collapses."""
+        if collapsed:
+            try:
+                self._side_panel_width = max(200, self._side_panel.winfo_width())
+            except tk.TclError:
+                pass
+            self._content_panes.paneconfigure(self._side_panel, width=RAIL_W + 4)
+        else:
+            self._content_panes.paneconfigure(self._side_panel, width=self._side_panel_width)
+        self._sync_panel_buttons()
+        self.pdf_viewer.refresh_layout()
+
     def _on_footer_applied(self):
         # A scoped apply changes only some pages, so redraw rather than
         # assume the visible page changed.
@@ -879,8 +938,11 @@ class PDFEditorApp:
         if image_id:
             self.image_properties.set_manager_context(self.image_manager, self.pdf_viewer.current_page)
             self.image_properties.load_object(image_id)
+            self.side_panels.set_section_visible("image", True)
+            self.side_panels.focus_section("image")
         else:
             self.image_properties.clear()
+            self.side_panels.set_section_visible("image", False)
 
     # ---- undo/redo -----------------------------------------------------------
 
@@ -903,6 +965,7 @@ class PDFEditorApp:
             target = max(1, min(self.pdf_viewer.current_page, self.document.page_count))
             self.pdf_viewer.current_page = target
             self.pdf_viewer.refresh_after_page_ops(target)
+            self.file_organizer.refresh()
 
         self.image_overlay.redraw()
         # Any in-progress typing draft is now stale relative to the
