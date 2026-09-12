@@ -28,6 +28,7 @@ from utils.ui_theme import apply_base_theme
 from utils.widgets import create_button, create_icon_button, vertical_separator
 from utils import icons as icon_lib
 from app.inspector_panel import ModernInspectorPanel, RAIL_WIDTH as RAIL_W
+from app.modern_menu import ModernMenuBar, ModernMenuItem
 
 from app.tools_panel import ToolsPanel
 from app.file_organizer_panel import FileOrganizerPanel
@@ -77,74 +78,73 @@ class PDFEditorApp:
     # ---- layout construction -------------------------------------------
 
     def _build_menu(self):
-        menubar = tk.Menu(self.root)
+        self.menubar = ModernMenuBar(self.root)
+        self.menubar.grid(row=0, column=0, sticky='ew')
 
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Open PDF...", command=self.open_pdf, accelerator="Ctrl+O")
-        file_menu.add_command(label="Import Multiple PDFs...", command=self.import_pdfs)
-        file_menu.add_separator()
-        file_menu.add_command(label="Open Project...", command=self.open_project)
-        file_menu.add_command(label="Save Project", command=self.save_project, accelerator="Ctrl+S")
-        file_menu.add_command(label="Save Project As...", command=self.save_project_as, accelerator="Ctrl+Shift+S")
-        file_menu.add_separator()
-        file_menu.add_command(label="Export PDF...", command=self.export_pdf, accelerator="Ctrl+E")
-        file_menu.add_command(label="Compress PDF...", command=self.open_compress_dialog)
-        file_menu.add_separator()
-        file_menu.add_command(label="Close Document", command=self.close_document, accelerator="Ctrl+W")
-        file_menu.add_command(label="Exit", command=self.quit_app, accelerator="Ctrl+Q")
-        menubar.add_cascade(label="File", menu=file_menu)
+        self.menubar.add_menu("file", "File", icon="open", items=[
+            ModernMenuItem("Open PDF...", command=self.open_pdf, accelerator="Ctrl+O"),
+            ModernMenuItem("Import Multiple PDFs...", command=self.import_pdfs),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Open Project...", command=self.open_project),
+            ModernMenuItem("Save Project", command=self.save_project, accelerator="Ctrl+S"),
+            ModernMenuItem("Save Project As...", command=self.save_project_as, accelerator="Ctrl+Shift+S"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Export PDF...", command=self.export_pdf, accelerator="Ctrl+E", icon="export"),
+            ModernMenuItem("Compress PDF...", command=self.open_compress_dialog, icon="compress"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Close Document", command=self.close_document, accelerator="Ctrl+W"),
+            ModernMenuItem("Exit", command=self.quit_app, accelerator="Ctrl+Q"),
+        ])
 
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
-        edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Copy Image(s)",  command=self._copy_images,  accelerator="Ctrl+C")
-        edit_menu.add_command(label="Paste Image(s)", command=self._paste_images, accelerator="Ctrl+V")
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Group Images",   command=self._group_images,   accelerator="Ctrl+G")
-        edit_menu.add_command(label="Ungroup Images", command=self._ungroup_images, accelerator="Ctrl+Shift+G")
-        menubar.add_cascade(label="Edit", menu=edit_menu)
+        self.menubar.add_menu("edit", "Edit", icon="edit", items=[
+            ModernMenuItem("Undo", command=self.undo, accelerator="Ctrl+Z", icon="undo"),
+            ModernMenuItem("Redo", command=self.redo, accelerator="Ctrl+Y", icon="redo"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Copy Image(s)", command=self._copy_images, accelerator="Ctrl+C"),
+            ModernMenuItem("Paste Image(s)", command=self._paste_images, accelerator="Ctrl+V"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Group Images", command=self._group_images, accelerator="Ctrl+G"),
+            ModernMenuItem("Ungroup Images", command=self._ungroup_images, accelerator="Ctrl+Shift+G"),
+        ])
 
-        view_menu = tk.Menu(menubar, tearoff=0)
-        view_menu.add_command(label="Zoom In", command=lambda: self.pdf_viewer.zoom_in(), accelerator="Ctrl++")
-        view_menu.add_command(label="Zoom Out", command=lambda: self.pdf_viewer.zoom_out(), accelerator="Ctrl+-")
-        view_menu.add_command(label="Actual Size (100%)", command=lambda: self.pdf_viewer.zoom_100(), accelerator="Ctrl+0")
-        view_menu.add_separator()
-        view_menu.add_command(label="Fit Page", command=lambda: self.pdf_viewer.fit_page())
-        view_menu.add_command(label="Fit Width", command=lambda: self.pdf_viewer.fit_width())
-        view_menu.add_separator()
-        view_menu.add_command(label="Next Page", command=lambda: self.pdf_viewer.next_page(), accelerator="Page Down")
-        view_menu.add_command(label="Previous Page", command=lambda: self.pdf_viewer.prev_page(), accelerator="Page Up")
-        menubar.add_cascade(label="View", menu=view_menu)
+        self.menubar.add_menu("view", "View", icon="zoom_in", items=[
+            ModernMenuItem("Zoom In", command=lambda: self.pdf_viewer.zoom_in(), accelerator="Ctrl++", icon="zoom_in"),
+            ModernMenuItem("Zoom Out", command=lambda: self.pdf_viewer.zoom_out(), accelerator="Ctrl+-", icon="zoom_out"),
+            ModernMenuItem("Actual Size (100%)", command=lambda: self.pdf_viewer.zoom_100(), accelerator="Ctrl+0"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Fit Page", command=lambda: self.pdf_viewer.fit_page(), icon="fit_page"),
+            ModernMenuItem("Fit Width", command=lambda: self.pdf_viewer.fit_width(), icon="fit_width"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Next Page", command=lambda: self.pdf_viewer.next_page(), accelerator="Page Down", icon="chevron_down"),
+            ModernMenuItem("Previous Page", command=lambda: self.pdf_viewer.prev_page(), accelerator="Page Up", icon="chevron_up"),
+        ])
 
-        insert_menu = tk.Menu(menubar, tearoff=0)
-        insert_menu.add_command(label="Add Image / Stamp...", command=self.add_image)
-        insert_menu.add_command(label="Insert Page(s) from PDF...", command=self.insert_pages_from_pdf)
-        menubar.add_cascade(label="Insert", menu=insert_menu)
+        self.menubar.add_menu("insert", "Insert", icon="plus", items=[
+            ModernMenuItem("Add Image / Stamp...", command=self.add_image, icon="add_image"),
+            ModernMenuItem("Insert Page(s) from PDF...", command=self.insert_pages_from_pdf, icon="insert_pages"),
+        ])
 
-        pages_menu = tk.Menu(menubar, tearoff=0)
-        pages_menu.add_command(label="Move Page Up", command=lambda: self._menu_move_current(-1))
-        pages_menu.add_command(label="Move Page Down", command=lambda: self._menu_move_current(1))
-        pages_menu.add_separator()
-        pages_menu.add_command(label="Insert Page(s) Before...", command=lambda: self._open_insert_pages_dialog(
-            at_page=self.pdf_viewer.current_page) if self.document else None)
-        pages_menu.add_command(label="Insert Page(s) After...", command=lambda: self._open_insert_pages_dialog(
-            at_page=self.pdf_viewer.current_page + 1) if self.document else None)
-        pages_menu.add_separator()
-        pages_menu.add_command(label="Delete Current Page", command=lambda: self._confirm_and_delete_page(
-            self.pdf_viewer.current_page) if self.document else None, accelerator="Delete")
-        menubar.add_cascade(label="Pages", menu=pages_menu)
+        self.menubar.add_menu("pages", "Pages", icon="document", items=[
+            ModernMenuItem("Move Page Up", command=lambda: self._menu_move_current(-1), icon="move_up"),
+            ModernMenuItem("Move Page Down", command=lambda: self._menu_move_current(1), icon="move_down"),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Insert Page(s) Before...", command=lambda: self._open_insert_pages_dialog(
+                at_page=self.pdf_viewer.current_page) if self.document else None),
+            ModernMenuItem("Insert Page(s) After...", command=lambda: self._open_insert_pages_dialog(
+                at_page=self.pdf_viewer.current_page + 1) if self.document else None),
+            ModernMenuItem("", is_separator=True),
+            ModernMenuItem("Delete Current Page", command=lambda: self._confirm_and_delete_page(
+                self.pdf_viewer.current_page) if self.document else None, accelerator="Delete", icon="delete"),
+        ])
 
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        tools_menu.add_command(label="Simple Footer Tool (Classic)...", command=self.open_classic_tool)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
+        self.menubar.add_menu("tools", "Tools", icon="settings", items=[
+            ModernMenuItem("Simple Footer Tool (Classic)...", command=self.open_classic_tool),
+        ])
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
-        help_menu.add_command(label="About PDF Document Studio", command=self._show_about)
-        menubar.add_cascade(label="Help", menu=help_menu)
-
-        self.root.config(menu=menubar)
+        self.menubar.add_menu("help", "Help", icon="more", items=[
+            ModernMenuItem("Keyboard Shortcuts", command=self._show_shortcuts),
+            ModernMenuItem("About PDF Document Studio", command=self._show_about),
+        ])
 
     def _menu_move_current(self, delta: int):
         if not self.document:
@@ -176,7 +176,7 @@ class PDFEditorApp:
 
     def _build_toolbar(self):
         toolbar = ctk.CTkFrame(self.root, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=48)
-        toolbar.grid(row=0, column=0, sticky='ew')
+        toolbar.grid(row=1, column=0, sticky='ew')
         toolbar.grid_propagate(False)
 
         def group(side=tk.LEFT, padx=(0, 0)):
@@ -320,13 +320,13 @@ class PDFEditorApp:
 
     def _build_layout(self):
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=1)
 
         content = tk.PanedWindow(
             self.root, orient=tk.HORIZONTAL, sashrelief=tk.FLAT, sashwidth=6,
             bg=ui_theme.resolve(ui_theme.BG_APP), bd=0,
             background=ui_theme.resolve(ui_theme.BG_APP))
-        content.grid(row=1, column=0, sticky='nsew')
+        content.grid(row=2, column=0, sticky='nsew')
 
         self.pdf_viewer = PDFViewerWidget(
             content,
@@ -425,7 +425,7 @@ class PDFEditorApp:
 
     def _build_status_bar(self):
         bar = ctk.CTkFrame(self.root, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=26)
-        bar.grid(row=2, column=0, sticky='ew')
+        bar.grid(row=3, column=0, sticky='ew')
         bar.grid_propagate(False)
         self.status_bar = ctk.CTkLabel(bar, text="No document loaded", anchor='w',
                                         font=ui_theme.font(11), text_color=ui_theme.TEXT_SECONDARY)
@@ -439,7 +439,7 @@ class PDFEditorApp:
         self.busy_bar = ctk.CTkProgressBar(self.root, height=4, corner_radius=2,
                                             progress_color=ui_theme.ACCENT)
         self.busy_bar.set(0)
-        self.busy_bar.grid(row=3, column=0, sticky='ew')
+        self.busy_bar.grid(row=4, column=0, sticky='ew')
         self._busy_job = None
         self._busy_value = 0.0
 
