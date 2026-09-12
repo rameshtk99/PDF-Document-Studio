@@ -348,6 +348,188 @@ class NumberSpinner(ctk.CTkFrame):
             self.on_change()
 
 
+class SearchableFontSelector(ctk.CTkFrame):
+    """Modern searchable font selector with autocomplete.
+
+    Displays a searchable entry field with dropdown list of system fonts.
+    Filters as you type, supports keyboard navigation, and syncs with a
+    tk.StringVar in real-time.
+    """
+
+    def __init__(self, parent, variable: tk.StringVar, all_fonts: list,
+                 on_change: Optional[Callable] = None, **kwargs):
+        kwargs.setdefault("fg_color", ui_theme.BG_SUBTLE)
+        kwargs.setdefault("corner_radius", ui_theme.RADIUS_SM)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui_theme.BORDER)
+        kwargs.setdefault("height", 26)
+        super().__init__(parent, **kwargs)
+
+        self.variable = variable
+        self.all_fonts = sorted(set(all_fonts or ['Helvetica']))
+        self.on_change = on_change
+        self._filtered_fonts = self.all_fonts[:]
+        self._selected_index = 0
+        self._dropdown_open = False
+
+        # Entry for search + display
+        self.entry = ctk.CTkEntry(
+            self, textvariable=variable, height=26, corner_radius=0,
+            border_width=0, fg_color="transparent", font=ui_theme.font(11),
+            placeholder_text="Search or select font...")
+        self.entry.pack(side=tk.LEFT, fill="both", expand=True, padx=(6, 0))
+        self.entry.bind("<KeyRelease>", self._on_entry_change)
+        self.entry.bind("<Down>", self._on_down)
+        self.entry.bind("<Up>", self._on_up)
+        self.entry.bind("<Return>", self._on_enter)
+        self.entry.bind("<Escape>", self._on_escape)
+        self.entry.bind("<FocusIn>", self._on_focus_in)
+
+        # Dropdown button
+        self.dropdown_btn = ctk.CTkButton(
+            self, text="", image=icon_lib.get("chevron_down", size=12, color=ui_theme.TEXT_SECONDARY),
+            width=26, height=26, corner_radius=0, fg_color="transparent",
+            hover_color=ui_theme.GHOST_HOVER, command=self._toggle_dropdown)
+        self.dropdown_btn.pack(side=tk.RIGHT, fill="y")
+
+        # Floating dropdown menu (created on demand)
+        self._dropdown_toplevel = None
+        self._dropdown_listbox = None
+
+    def _on_entry_change(self, event=None):
+        search = self.entry.get().lower()
+        self._filtered_fonts = [f for f in self.all_fonts if search in f.lower()]
+        if not self._filtered_fonts:
+            self._filtered_fonts = self.all_fonts[:]
+        self._selected_index = 0
+
+        if self._dropdown_open:
+            self._update_dropdown()
+
+        if self.on_change:
+            self.on_change()
+
+    def _on_down(self, event=None):
+        self._selected_index = min(self._selected_index + 1, len(self._filtered_fonts) - 1)
+        if not self._dropdown_open:
+            self._open_dropdown()
+        else:
+            self._update_dropdown()
+        return "break"
+
+    def _on_up(self, event=None):
+        self._selected_index = max(self._selected_index - 1, 0)
+        if not self._dropdown_open:
+            self._open_dropdown()
+        else:
+            self._update_dropdown()
+        return "break"
+
+    def _on_enter(self, event=None):
+        if self._dropdown_open and self._filtered_fonts:
+            selected_font = self._filtered_fonts[self._selected_index]
+            self.variable.set(selected_font)
+            self._close_dropdown()
+            if self.on_change:
+                self.on_change()
+        return "break"
+
+    def _on_escape(self, event=None):
+        self._close_dropdown()
+        return "break"
+
+    def _on_focus_in(self, event=None):
+        self._open_dropdown()
+
+    def _toggle_dropdown(self):
+        if self._dropdown_open:
+            self._close_dropdown()
+        else:
+            self._open_dropdown()
+
+    def _open_dropdown(self):
+        if self._dropdown_open:
+            return
+
+        self._dropdown_open = True
+        current = self.variable.get()
+
+        if current in self.all_fonts:
+            try:
+                self._selected_index = self._filtered_fonts.index(current)
+            except ValueError:
+                self._selected_index = 0
+        else:
+            self._selected_index = 0
+
+        # Create floating window at entry position
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height()
+        w = self.winfo_width()
+
+        self._dropdown_toplevel = tk.Toplevel(self.master)
+        self._dropdown_toplevel.wm_overrideredirect(True)
+        self._dropdown_toplevel.geometry(f"{w}x150+{x}+{y}")
+        self._dropdown_toplevel.configure(bg=ui_theme.resolve(ui_theme.BG_SURFACE))
+
+        # Listbox with scrollbar
+        frame = tk.Frame(self._dropdown_toplevel, bg=ui_theme.resolve(ui_theme.BG_SURFACE))
+        frame.pack(fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(frame, bg=ui_theme.resolve(ui_theme.BORDER),
+                                  troughcolor=ui_theme.resolve(ui_theme.BG_SURFACE))
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._dropdown_listbox = tk.Listbox(
+            frame, font=("Segoe UI", 10), bg=ui_theme.resolve(ui_theme.BG_SURFACE),
+            fg=ui_theme.resolve(ui_theme.TEXT_PRIMARY), selectmode=tk.SINGLE,
+            highlightthickness=0, bd=0, yscrollcommand=scrollbar.set)
+        self._dropdown_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        scrollbar.config(command=self._dropdown_listbox.yview)
+
+        self._dropdown_listbox.bind("<Button-1>", self._on_listbox_click)
+        self._dropdown_listbox.bind("<Double-Button-1>", lambda e: self._select_from_listbox())
+        self._dropdown_toplevel.bind("<FocusOut>", lambda e: self._close_dropdown())
+
+        self._update_dropdown()
+        self.entry.focus()
+
+    def _update_dropdown(self):
+        if not self._dropdown_listbox:
+            return
+
+        self._dropdown_listbox.delete(0, tk.END)
+        for font in self._filtered_fonts:
+            self._dropdown_listbox.insert(tk.END, font)
+
+        if self._filtered_fonts and 0 <= self._selected_index < len(self._filtered_fonts):
+            self._dropdown_listbox.selection_set(self._selected_index)
+            self._dropdown_listbox.see(self._selected_index)
+
+    def _on_listbox_click(self, event=None):
+        selection = self._dropdown_listbox.curselection()
+        if selection:
+            self._selected_index = selection[0]
+
+    def _select_from_listbox(self):
+        if self._filtered_fonts and 0 <= self._selected_index < len(self._filtered_fonts):
+            selected_font = self._filtered_fonts[self._selected_index]
+            self.variable.set(selected_font)
+            self._close_dropdown()
+            if self.on_change:
+                self.on_change()
+
+    def _close_dropdown(self):
+        self._dropdown_open = False
+        if self._dropdown_toplevel:
+            try:
+                self._dropdown_toplevel.destroy()
+            except tk.TclError:
+                pass
+            self._dropdown_toplevel = None
+            self._dropdown_listbox = None
+
+
 def empty_state(parent, icon: str, title: str, subtitle: str = "",
                  button_text: Optional[str] = None,
                  button_command: Optional[Callable] = None) -> ctk.CTkFrame:

@@ -31,6 +31,7 @@ from utils.ui_theme import (
 )
 from utils.widgets import (
     create_button, create_icon_button, CollapsibleSection, NumberSpinner,
+    SearchableFontSelector,
 )
 from app.document_commands import ChangeGlobalFooterCommand, ChangePagesFooterCommand
 from app.footer_mini_preview import FooterMiniPreview
@@ -244,12 +245,9 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
             w.grid(row=row, column=col + 1, sticky="ew", pady=2, padx=(0, 10 if col == 0 else 0))
             return w
 
-        self.font_menu = grid_row(0, "Font", lambda: ctk.CTkOptionMenu(
-            grid, variable=self.font_var, values=self.fonts_available,
-            command=lambda v: self._on_font_changed(), fg_color=BG_SUBTLE,
-            button_color=SECONDARY_BTN, button_hover_color=SECONDARY_BTN_HOVER,
-            text_color=TEXT_PRIMARY, dropdown_fg_color=BG_SURFACE, font=font(12), height=26,
-            width=1))
+        self.font_menu = grid_row(0, "Font", lambda: SearchableFontSelector(
+            grid, variable=self.font_var, all_fonts=self.fonts_available,
+            on_change=self._on_font_changed, height=26))
         self.font_size_entry = grid_row(0, "Size", lambda: ctk.CTkEntry(
             grid, textvariable=self.font_size_var, height=26, corner_radius=RADIUS_SM,
             border_color=BORDER, fg_color=BG_SUBTLE, font=font(12)), col=2)
