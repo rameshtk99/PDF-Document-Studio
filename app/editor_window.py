@@ -1,19 +1,10 @@
 """
-PDF Document Studio -- the real, wired-together GUI.
+The main editor window: wires PDFViewerWidget (thumbnails + canvas +
+zoom/nav), QuickFooterPanel and ToolsPanel, the image overlay and its
+properties panel, undo/redo, project save/load, and PDF export.
 
-Composes the previously-isolated Phase 1 building blocks into one working
-window: PDFViewerWidget (thumbnails + canvas + zoom/nav), QuickFooterPanel
-(flat, same-footer-everywhere editing) + ToolsPanel (compress/add image-
-stamp/insert-pages/export) as tabs docked right next to the live preview,
-ImageOverlayController + ImagePropertiesPanel (interactive image
-placement), UndoRedoManager (real Ctrl+Z/Ctrl+Y), ProjectManager
-(.pdfeditor save/load), and DocumentExporter (real, per-page,
-white-space-aware PDF output).
-
-CLI (batch/cli.py) and the legacy flat FooterApp are untouched -- this
-module only changes what `python main.py` launches by default. The
-original standalone tool also stays reachable from Tools > Simple Footer
-Tool (Classic) as a separate window, for anyone who prefers that flow.
+The CLI (batch/cli.py) and the legacy FooterApp are untouched; the latter
+stays reachable from Tools > Simple Footer Tool (Classic).
 """
 
 import os
@@ -45,6 +36,7 @@ from app.document_commands import (
 )
 from app.image_overlay import ImageOverlayController, ImagePropertiesPanel
 from app.compress_dialog import CompressDialog
+from app.import_pdfs_dialog import ImportPdfsDialog
 from app.insert_pages_dialog import InsertPagesDialog
 from app.footer_preview import FooterPreviewController
 from app import modern_dialogs as dialogs
@@ -85,6 +77,7 @@ class PDFEditorApp:
 
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Open PDF...", command=self.open_pdf, accelerator="Ctrl+O")
+        file_menu.add_command(label="Import Multiple PDFs...", command=self.import_pdfs)
         file_menu.add_separator()
         file_menu.add_command(label="Open Project...", command=self.open_project)
         file_menu.add_command(label="Save Project", command=self.save_project, accelerator="Ctrl+S")
@@ -93,7 +86,8 @@ class PDFEditorApp:
         file_menu.add_command(label="Export PDF...", command=self.export_pdf, accelerator="Ctrl+E")
         file_menu.add_command(label="Compress PDF...", command=self.open_compress_dialog)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
+        file_menu.add_command(label="Close Document", command=self.close_document, accelerator="Ctrl+W")
+        file_menu.add_command(label="Exit", command=self.quit_app, accelerator="Ctrl+Q")
         menubar.add_cascade(label="File", menu=file_menu)
 
         edit_menu = tk.Menu(menubar, tearoff=0)
@@ -247,11 +241,8 @@ class PDFEditorApp:
         self.left_panel_button.pack(side=tk.RIGHT, padx=(0, 2))
 
     def _build_layout(self):
-        # Grid (not pack) on self.root for the toolbar/content/status-bar
-        # stack: pack's cavity-sharing with a PanedWindow child that has
-        # expand=True was leaving the bottom-packed status/progress bars
-        # squeezed to ~1px with no reliable way to reclaim their space.
-        # Grid with an explicit expanding row is deterministic.
+        # grid, not pack: pack's cavity-sharing with an expanding
+        # PanedWindow squeezed the status/progress bars to ~1px.
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
@@ -282,8 +273,11 @@ class PDFEditorApp:
             on_preview_changed=self._on_footer_preview_changed,
             on_export_requested=self.export_pdf,
             on_compress_requested=self.compress_pdf,
+            on_applied=self._on_footer_applied,
         )
         self.quick_footer_panel.get_current_page = lambda: self.pdf_viewer.current_page
+        self.quick_footer_panel.get_selected_pages = (
+            lambda: self.pdf_viewer.thumbnail_panel.get_selected_pages())
         self.quick_footer_panel.pack(fill=tk.BOTH, expand=True)
 
         tab_tools = self.side_notebook.add("Tools")
@@ -306,11 +300,8 @@ class PDFEditorApp:
             on_applied=self.image_overlay.redraw,
             on_selection_changed=self.image_overlay.select,
         )
-        # Packed BOTTOM/no-expand before the (TOP, expand=True) notebook
-        # below -- this way Image Properties keeps its natural content
-        # height as a fixed bottom dock, and Quick Footer/Tools get
-        # whatever vertical space is left, instead of the two splitting
-        # the panel 50/50.
+        # Packed BOTTOM/no-expand before the expanding notebook, so it
+        # docks at its content height instead of splitting the panel 50/50.
         self.image_properties.pack(side=tk.BOTTOM, fill=tk.X)
         self.side_notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -323,12 +314,11 @@ class PDFEditorApp:
     # ---- panel visibility -------------------------------------------------
 
     def toggle_side_panel(self):
-        """Show/hide the whole right-hand properties column.
+        """Show/hide the right-hand properties column.
 
-        PanedWindow has no "hide this pane" -- forget() drops it and
-        add() puts it back at the end, which is the right place anyway
-        since it's the last pane. The width it had is remembered so the
-        pane comes back the size the user left it, not the default.
+        PanedWindow has no "hide pane", so the pane is forgotten and
+        re-added (it's last, so order is preserved), at the width the
+        user left it.
         """
         if self._side_panel_hidden:
             self._content_panes.add(self._side_panel, width=self._side_panel_width)
@@ -383,18 +373,16 @@ class PDFEditorApp:
         self.root.bind_all('<Control-o>', lambda e: self.open_pdf())
         self.root.bind_all('<Control-s>', lambda e: self.save_project())
         self.root.bind_all('<Control-e>', lambda e: self.export_pdf())
+        self.root.bind_all('<Control-w>', self.close_document)
+        self.root.bind_all('<Control-q>', self.quit_app)
         self.root.bind_all('<Delete>', self._delete_selected_image)
-        # Image-specific shortcuts fire only when no text field has focus.
-        # Bound once here (root-level, focus-independent) rather than also
-        # on the canvas widget -- binding the same sequence in both places
-        # made Tk fire both handlers on a single keypress, which is what
-        # made copy/paste/group feel unreliable (double-invoked).
+        # Bound once at root level only -- binding these on the canvas
+        # too made Tk fire both handlers per keypress.
         self.root.bind_all('<Control-c>', self._copy_images)
         self.root.bind_all('<Control-v>', self._paste_images)
         self.root.bind_all('<Control-g>', lambda e: self._group_images_if_canvas(e))
         self.root.bind_all('<Control-G>', lambda e: self._ungroup_images_if_canvas(e))
-        # Zoom / page navigation -- '=' fires for both Ctrl+= and Ctrl+Shift+=
-        # (i.e. Ctrl++ on most keyboard layouts, no separate Shift binding needed).
+        # '=' covers both Ctrl+= and Ctrl+Shift+= (Ctrl++ on most layouts).
         self.root.bind_all('<Control-equal>', lambda e: self.pdf_viewer.zoom_in())
         self.root.bind_all('<Control-minus>', lambda e: self.pdf_viewer.zoom_out())
         self.root.bind_all('<Control-0>', lambda e: self.pdf_viewer.zoom_100())
@@ -404,17 +392,47 @@ class PDFEditorApp:
     # ---- document lifecycle ---------------------------------------------
 
     def open_pdf(self):
+        """Open one PDF, or several combined into a single document.
+
+        The chooser allows multi-select; picking exactly one file goes
+        straight to loading it (unchanged behaviour), while picking
+        several first opens the ordering step, since "which file comes
+        first" is a decision only the user can make.
+        """
         if self._loading:
             return
-        path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if not path:
+        paths = filedialog.askopenfilenames(filetypes=[("PDF files", "*.pdf")])
+        if not paths:
             return
+        paths = list(paths)
 
-        self._begin_loading(f"Loading {os.path.basename(path)} ...")
+        if len(paths) == 1:
+            self._load_pdf_paths(paths)
+        else:
+            ImportPdfsDialog(self.root, on_import=self._load_pdf_paths,
+                              initial_paths=paths)
+
+    def import_pdfs(self):
+        """File > Import PDFs...: same combine flow, but starting from an
+        empty list so files can be gathered over several picks."""
+        if self._loading:
+            return
+        ImportPdfsDialog(self.root, on_import=self._load_pdf_paths)
+
+    def _load_pdf_paths(self, paths):
+        """Load one or more PDFs (in the given order) as the document."""
+        if self._loading or not paths:
+            return
+        paths = list(paths)
+        if len(paths) == 1:
+            message = f"Loading {os.path.basename(paths[0])} ..."
+        else:
+            message = f"Combining {len(paths)} PDFs ..."
+        self._begin_loading(message)
 
         def worker():
             try:
-                document = PDFLoader.load_pdf(path)
+                document = PDFLoader.load_pdfs(paths)
                 self.root.after(0, lambda: self._on_pdf_loaded(document))
             except Exception as e:
                 # Capture now -- `e` is unbound by the time a deferred
@@ -428,6 +446,42 @@ class PDFEditorApp:
         self.project_manager = ProjectManager()
         self._load_document(document, project_path=None)
         self._end_loading()
+
+    def close_document(self, event=None):
+        """Close the open document and return to the empty state (Ctrl+W)."""
+        if self._loading or not self.document:
+            return
+        if not self._confirm_discard_changes("Close Document"):
+            return
+
+        self.document = None
+        self.project_manager = ProjectManager()
+        self.image_manager.load_document(None)
+        self.image_editor.load_document(None)
+        self.undo_manager.clear()
+        self.footer_preview.clear_draft()
+        self.image_overlay.select(None)
+        self.image_properties.clear()
+        self.pdf_viewer.clear_document()
+        self.quick_footer_panel.load_document(None)
+        self._set_document_dependent_state(False)
+        self._update_status()
+
+    def quit_app(self, event=None):
+        """Exit the application (Ctrl+Q)."""
+        if not self._confirm_discard_changes("Exit"):
+            return
+        self.root.quit()
+
+    def _confirm_discard_changes(self, title: str) -> bool:
+        """True if it's safe to proceed -- either nothing is unsaved or
+        the user chose to discard."""
+        if not self.document or not self.document.is_modified():
+            return True
+        name = os.path.basename(self.document.pdf_path)
+        return dialogs.ask_yes_no(
+            self.root, title,
+            f"{name} has unsaved changes.\n\nDiscard them?", danger=True)
 
     def _load_document(self, document: Document, project_path: Optional[str]):
         self.document = document
@@ -650,11 +704,9 @@ class PDFEditorApp:
         InsertPagesDialog(self.root, on_insert=on_insert)
 
     def _refresh_after_page_ops(self, target_page: int):
-        """Common refresh after any page delete/move/insert: reload the
-        viewer's continuous-scroll layout + thumbnails from the (already
-        mutated) document.pages, land on target_page, and make sure every
-        side panel (Page Settings, image selection, footer preview) drops
-        anything tied to the old page arrangement."""
+        """Refresh after a page delete/move/insert: rebuild the viewer's
+        layout and thumbnails from document.pages and land on
+        target_page."""
         if not self.document:
             return
         target_page = max(1, min(target_page, self.document.page_count))
@@ -801,10 +853,10 @@ class PDFEditorApp:
     def _on_page_changed(self, page_num: int):
         self.image_properties.set_manager_context(self.image_manager, page_num)
         self.image_overlay.on_page_changed(page_num)
-        # A draft belongs to the page it was being typed for; switching
-        # pages should show that new page's real, already-committed
-        # footer, not carry over a stale in-progress edit.
+        # A draft belongs to the page it was typed for -- don't carry it
+        # over to the page being switched to.
         self.footer_preview.clear_draft()
+        self.quick_footer_panel.refresh_scope_hint()
         self._update_status()
 
     def _on_after_render(self):
@@ -816,6 +868,12 @@ class PDFEditorApp:
             self.footer_preview.clear_draft()
         else:
             self.footer_preview.set_draft(draft_config, page_number)
+
+    def _on_footer_applied(self):
+        # A scoped apply changes only some pages, so redraw rather than
+        # assume the visible page changed.
+        self.footer_preview.redraw()
+        self._update_status()
 
     def _on_image_selection_changed(self, image_id: Optional[str]):
         if image_id:

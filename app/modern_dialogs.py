@@ -1,18 +1,10 @@
 """
-Modern popup primitives -- styled replacements for tkinter's
-messagebox/simpledialog, which render as plain OS-native dialogs that
-clash against the app's customtkinter-styled panels/dialogs.
+Themed replacements for tkinter's messagebox/simpledialog, which render
+as OS-native dialogs that clash with the rest of the UI.
 
-Each function blocks (like its tkinter equivalent) and returns a plain
-value, so swapping call sites is close to 1:1:
-
-    tkinter.messagebox.askyesno(title, msg)       -> ask_yes_no(parent, title, msg)
-    tkinter.messagebox.showinfo(title, msg)       -> show_info(parent, title, msg)
-    tkinter.messagebox.showerror(title, msg)      -> show_error(parent, title, msg)
-    tkinter.simpledialog.askstring(title, prompt) -> ask_text(parent, title, prompt)
-
-Ported from mockup_ui/dialogs.py once that design was verified against
-real screenshots and event-simulation tests.
+Each blocks and returns a plain value, so call sites map ~1:1:
+askyesno -> ask_yes_no, showinfo -> show_info, showerror -> show_error,
+askstring -> ask_text.
 """
 
 from __future__ import annotations
@@ -93,13 +85,8 @@ class _ModernDialog(ctk.CTkToplevel):
         self._destroy_safely()
 
     def _destroy_safely(self):
-        # customtkinter's CTkToplevel schedules a short after() chain on
-        # Windows to restore the window state once it colors the title
-        # bar; destroying within that ~15ms window logs a harmless but
-        # noisy "bad window path name" TclError from customtkinter's own
-        # internal callback. A tiny delay here lets that chain finish
-        # first -- imperceptible to a real user, who takes far longer
-        # than this to click a button anyway.
+        # CTkToplevel runs a ~15ms after() chain on Windows to color the
+        # title bar; destroying inside it logs a noisy TclError.
         self.after(50, self.destroy)
 
 

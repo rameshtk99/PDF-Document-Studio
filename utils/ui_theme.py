@@ -1,15 +1,9 @@
 """
-Shared design tokens for the app's customtkinter UI (modern_dialogs.py,
-compress_dialog.py, insert_pages_dialog.py, quick_footer_panel.py,
-tools_panel.py, and editor_window.py's chrome). Centralized here so every
-migrated widget stays visually consistent -- ported from the prototype
-in mockup_ui/theme.py once that design was verified against real
-screenshots.
+Design tokens for the customtkinter UI -- colors, spacing, radius, fonts.
 
-Colors are given as (light, dark) tuples -- customtkinter widgets accept
-that directly for any *_color argument and pick the right one based on
-ctk.set_appearance_mode(). Pass a plain string only when a color is meant
-to stay fixed across modes (e.g. the accent color).
+Colors are (light, dark) tuples, which customtkinter accepts directly for
+any *_color argument. Use a plain string only where a color should stay
+fixed across modes (the accent).
 """
 
 import customtkinter as ctk
@@ -17,12 +11,9 @@ import customtkinter as ctk
 # ---------------------------------------------------------------- palette
 
 
-# Layered-surface ladder -- each step is a small, deliberate luminance
-# step up from the one before (never pure black/white), so panels read as
-# stacked depth rather than a wall of same-toned rectangles:
-#   BG_APP (window) < BG_PANEL (toolbar/sidebar/inspector) < BG_SURFACE
-#   (cards/dialogs) < BG_ELEVATED (hovered card) < BG_SUBTLE (inputs, which
-#   sit visually "recessed" rather than elevated).
+# Layered surfaces, lightest step last:
+# BG_APP < BG_PANEL < BG_SURFACE < BG_ELEVATED; BG_SUBTLE is for inputs,
+# which should read recessed rather than raised.
 BG_APP = ("#F5F6F8", "#1A1B1E")
 BG_PANEL = ("#EFF1F3", "#212226")
 BG_SURFACE = ("#FFFFFF", "#26272B")
@@ -44,10 +35,8 @@ TEXT_DISABLED = ("#B3B7BD", "#54565B")
 ACCENT = "#2F6FED"          # primary action color (buttons, selection, links)
 ACCENT_HOVER = "#255BC7"
 ACCENT_PRESSED = "#1E4AA3"
-# Restrained tint -- a whisper of accent behind a selected row/card, not a
-# saturated block of color; the light-mode value stays pale and the
-# dark-mode value stays a desaturated near-neutral so it never reads as
-# "the card got painted blue".
+# Deliberately desaturated: a hint of accent behind a selected row,
+# not a card painted blue.
 ACCENT_SOFT = ("#EAF1FF", "#1E2733")
 
 WARNING = "#D97706"
@@ -94,18 +83,16 @@ _theme_applied = False
 
 
 def font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
-    """CTkFont must be created lazily (after a CTk root exists), so this
-    is a function, not a module-level constant."""
+    """A function, not a constant: CTkFont needs a CTk root to exist."""
     return ctk.CTkFont(family=FONT_FAMILY, size=size, weight=weight)
 
 
 def resolve(color):
-    """Resolve a (light, dark) tuple to a plain color string for the
-    CURRENT appearance mode -- needed for the handful of plain tkinter
-    widgets (ThumbnailPanel's Canvas/drag-animation frames) that stay
-    outside customtkinter's own dynamic light/dark switching, so they
-    can still start out matching the app's palette. Returns `color`
-    unchanged if it's already a plain string."""
+    """Flatten a (light, dark) tuple for the current appearance mode.
+
+    Needed by the plain-tkinter widgets that sit outside customtkinter's
+    own light/dark switching. Plain strings pass through unchanged.
+    """
     if isinstance(color, str):
         return color
     return color[1] if ctk.get_appearance_mode() == "Dark" else color[0]
@@ -120,9 +107,7 @@ def lerp_hex(color_a: str, color_b: str, t: float) -> str:
 
 
 def apply_base_theme():
-    """Call once, right after creating the CTk root. Safe to call more
-    than once (e.g. from multiple dialog modules during the phased
-    migration) -- only takes effect the first time."""
+    """Call once after creating the CTk root; repeat calls are no-ops."""
     global _theme_applied
     if _theme_applied:
         return

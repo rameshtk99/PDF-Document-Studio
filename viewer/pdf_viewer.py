@@ -56,30 +56,16 @@ class ThumbnailPanel(tk.Frame):
                  on_page_reorder: Optional[Callable[[int, int], None]] = None,
                  on_collapse_requested: Optional[Callable[[], None]] = None, **kwargs):
         """
-        Initialize thumbnail panel
-
         Args:
-            parent: Parent widget
-            document: Document object
-            on_page_selected: Callback function(page_num) when page clicked
-            on_scroll_page_changed: Callback function(page_num) fired when
-                scrolling (wheel or scrollbar drag) brings a different page's
-                thumbnail to the top -- lets the main view follow along, the
-                same way the main view scrolls this panel's list.
-            on_page_action: Callback(action, page_num) from the right-click
-                page menu / toolbar buttons. action is one of 'move_up',
+            on_page_selected: callback(page_num) on click
+            on_scroll_page_changed: callback(page_num) when scrolling brings
+                a different thumbnail to the top, so the main view follows
+            on_page_action: callback(action, page_num) for 'move_up',
                 'move_down', 'insert_before', 'insert_after', 'delete'.
-                page_num is 1-indexed. The caller (editor_window.py) owns
-                the actual Document/undo-manager operation and is
-                responsible for reloading the viewer/thumbnails afterward.
-            on_page_reorder: Callback(from_page, to_page), both 1-indexed,
-                fired when a thumbnail is dragged and dropped onto a new
-                position. Separate from on_page_action since it carries
-                two page numbers instead of one.
-            on_collapse_requested: Optional callback() for the header's
-                "hide this panel" chevron. When omitted the chevron isn't
-                shown at all, so the panel stays usable standalone.
-            **kwargs: Additional frame arguments
+                The caller owns the Document/undo operation and the reload.
+            on_page_reorder: callback(from_page, to_page) after a drag-drop
+            on_collapse_requested: callback() for the hide-panel chevron;
+                omit it and no chevron is shown
         """
         super().__init__(parent, **kwargs)
 
@@ -108,23 +94,15 @@ class ThumbnailPanel(tk.Frame):
         self._drag_ghost: Optional[tk.Toplevel] = None
         self._drag_ghost_offset: Tuple[int, int] = (0, 0)
 
-        # Slide-to-open-gap animation state -- while dragging, every OTHER
-        # thumbnail is switched from pack() to place() so it can be
-        # smoothly animated sideways/up/down to the slot it would land in
-        # if the drag were dropped where the pointer currently is,
-        # visually "opening a gap" for the dragged page the way
-        # combinepdf.com does, instead of a static insertion-line.
+        # While dragging, the other thumbnails switch from pack() to
+        # place() so they can animate open a gap at the drop position.
         self._drag_others: List[int] = []       # page numbers other than the dragged one, in fixed relative order
         self._drag_slot_height: int = 0         # uniform per-thumbnail slot height (frame height + pady)
         self._drag_gap_idx: Optional[int] = None  # which slot (within _drag_others + gap) currently holds the gap
         self._drag_anim_jobs: Dict[int, str] = {}  # page_num -> pending after() id, for cancel/retarget mid-slide
 
-        # Bumped on every load_document() call; the background render
-        # thread and its scheduled main-thread callbacks carry the
-        # generation they were started for, so a still-running thread from
-        # a previous load_document() (e.g. two page operations firing in
-        # quick succession) can't write stale thumbnails into the current
-        # one's dicts once a newer load has started.
+        # Bumped per load_document(); render threads carry their
+        # generation so a superseded one can't write stale thumbnails.
         self._load_generation = 0
 
         self.config(bg=ui_theme.resolve(ui_theme.BG_SIDEBAR), width=150)
@@ -268,14 +246,9 @@ class ThumbnailPanel(tk.Frame):
         for page_num in range(1, self.document.page_count + 1):
             if generation != self._load_generation:
                 return  # a newer load_document() superseded this run -- stop early
-            # Render thumbnail. zoom=1.2 at this dpi -> ~245x317px for a
-            # Letter page -- deliberately bigger than the 120x160 target
-            # box below so PIL's .thumbnail() (which only ever shrinks,
-            # never enlarges) has something to downscale with real
-            # anti-aliasing. The previous dpi=24/zoom=0.15 rendered at
-            # only ~31x40px -- already smaller than the box, so
-            # .thumbnail() was a no-op and the button showed a tiny page
-            # floating in a mostly-empty box instead of filling it.
+            # Rendered larger than the 120x160 target box on purpose:
+            # .thumbnail() only shrinks, so it needs headroom to
+            # downscale with real anti-aliasing.
             src_path, src_page_num = _resolve_page_source(self.document, page_num)
             img = PDFRenderer.render_page(
                 src_path,
@@ -319,12 +292,8 @@ class ThumbnailPanel(tk.Frame):
 
         card_bg = ui_theme.resolve(ui_theme.BG_SURFACE)
 
-        # "Card" look: a borderless block that reads as a distinct object
-        # purely through its own background shade against the sidebar
-        # behind it (BG_SURFACE vs BG_PANEL) -- no visible outline at
-        # rest. A left accent stripe + border only appear for
-        # hover/selected state (see _update_single_highlight), instead of
-        # painting the whole card a solid accent color.
+        # Card reads through its background shade alone; the accent
+        # stripe and border appear only on hover/select.
         frame = tk.Frame(self.thumbnails_frame, bg=card_bg, highlightthickness=1,
                           highlightbackground=card_bg, highlightcolor=card_bg, bd=0)
         frame.pack(fill=tk.X, padx=10, pady=5)
@@ -355,13 +324,9 @@ class ThumbnailPanel(tk.Frame):
         btn.bind("<Shift-Button-1>", lambda e: self._on_thumbnail_click(page_num, 'shift'))
         btn.bind("<Button-3>", lambda e, p=page_num: self._show_page_context_menu(e, p))
 
-        # Drag-to-reorder -- added ("+") alongside the button's own
-        # click-select `command`, not replacing it: a plain click (no
-        # meaningful movement) still falls through to normal selection;
-        # only once the pointer has actually moved past the drag
-        # threshold does release do a reorder instead, and it returns
-        # "break" in that case so the native click-select doesn't also
-        # fire for the same gesture.
+        # Added alongside the button's own click-select, not replacing
+        # it: a plain click still selects; only a past-threshold drag
+        # reorders, and returns "break" so select doesn't also fire.
         btn.bind("<ButtonPress-1>", lambda e, p=page_num: self._on_drag_press(e, p), add="+")
         btn.bind("<B1-Motion>", lambda e, p=page_num: self._on_drag_motion(e, p), add="+")
         btn.bind("<ButtonRelease-1>", lambda e, p=page_num: self._on_drag_release(e, p), add="+")
@@ -534,20 +499,13 @@ class ThumbnailPanel(tk.Frame):
         # command handle selection normally.
 
     def _start_drag_ghost(self, event, page_num: int):
-        """Create a small borderless window carrying a copy of the
-        thumbnail image, centered directly on the cursor -- this is what
-        makes the drag visually track the mouse smoothly (combinepdf.com-
-        style) instead of the drop target just silently recoloring.
+        """Borderless window holding a copy of the thumbnail, centered on
+        the cursor, so the drag visibly tracks the mouse.
 
-        The offset is measured from the ghost's own rendered size, not
-        the source button's -- a tk.Button's actual on-screen box (image
-        + its internal padding + border) doesn't line up 1:1 with the
-        plain PhotoImage a Label shows, so computing the offset against
-        the button's geometry left the ghost visibly drifting away from
-        the pointer as you dragged. Measuring the ghost's own size instead
-        keeps it self-consistent regardless of that padding/border, and
-        of any OS display-scaling quirks, since everything here is in the
-        same Tk coordinate space.
+        The offset is measured from the ghost's own size, not the source
+        button's -- a Button's box (image + padding + border) doesn't
+        match the plain PhotoImage, and using it made the ghost drift
+        away from the pointer.
         """
         src_btn = self.thumbnail_buttons.get(page_num)
         photo = self.thumbnail_images.get(page_num)
@@ -622,26 +580,17 @@ class ThumbnailPanel(tk.Frame):
         self._drag_gap_idx = drag_page - 1
 
     def _compute_gap_idx(self, target_page: Optional[int]) -> int:
-        """Which slot (0..len(_drag_others)) the open gap should sit at
-        for the current drop target -- expressed as an index into
-        _drag_others "with a gap inserted", so slot i<gap_idx keeps
-        _drag_others[i] in its original relative order and slot
-        i>=gap_idx shifts it one slot later.
+        """Which slot the open gap sits at for the current drop target.
 
-        This MUST line up with Document.move_page's pop-then-insert
-        semantics (to_index = target_page - 1, since page numbers are
-        always exactly 1..N with no gaps -- a page's number already IS
-        its 0-based original-order index, plus one) or the animation
-        shows a different landing spot than the drop actually produces.
-        Using the target's position within _drag_others instead (its
-        index with the dragged page already removed) was off by one for
-        any target that originally came after the dragged page -- e.g.
-        dragging page 1 down onto page 2 computed the same gap slot as
-        "not dragging yet", so page 2 never visibly moved."""
+        Must match Document.move_page's pop-then-insert semantics
+        (to_index = target_page - 1) or the animation shows a different
+        landing spot than the drop produces. Using the target's index
+        within _drag_others instead is off by one for targets that came
+        after the dragged page.
+        """
         if target_page is not None and target_page in self.thumbnail_frames:
             return target_page - 1
-        # Hovering over nothing valid -- fall back to "no movement" by
-        # keeping whatever gap position is already in effect.
+        # Nothing valid under the pointer: keep the current gap.
         return self._drag_gap_idx if self._drag_gap_idx is not None else 0
 
     def _animate_others_to_gap(self, gap_idx: int):
@@ -908,26 +857,11 @@ class PDFViewerWidget(tk.Frame):
                  on_page_reorder: Optional[Callable[[int, int], None]] = None,
                  on_open_requested: Optional[Callable] = None, **kwargs):
         """
-        Initialize PDF viewer widget
-
         Args:
-            parent: Parent widget
-            document: Document object to display
-            on_page_changed: Optional callback(page_num) fired whenever the
-                current page changes (next/prev/goto/thumbnail click)
-            on_after_render: Optional callback() fired after the canvas has
-                just redrawn the current page (lets callers overlay extra
-                items on top of the freshly-drawn page image)
-            on_page_action: Forwarded to ThumbnailPanel's right-click page
-                menu / toolbar -- see ThumbnailPanel's own docstring for
-                the (action, page_num) contract.
-            on_page_reorder: Forwarded to ThumbnailPanel's drag-to-reorder
-                -- see ThumbnailPanel's own docstring for the
-                (from_page, to_page) contract.
-            on_open_requested: Optional callback() for the "Open a PDF..."
-                button shown in the empty-canvas placeholder before any
-                document is loaded.
-            **kwargs: Additional frame arguments
+            on_page_changed: callback(page_num) when the current page changes
+            on_after_render: callback() after a redraw, for overlays
+            on_page_action / on_page_reorder: forwarded to ThumbnailPanel
+            on_open_requested: callback() for the empty-state Open button
         """
         super().__init__(parent, **kwargs)
 
@@ -941,14 +875,9 @@ class PDFViewerWidget(tk.Frame):
         self._empty_state_window = None
         self._empty_state_frame = None
 
-        # Continuous-scroll layout: every page's (x, y_top, w, h, zoom) is
-        # precomputed up front from document metadata alone (cheap -- no
-        # rendering), so the canvas scrollregion -- and therefore the
-        # scrollbar -- always represents the WHOLE document, not just
-        # whichever pages happen to be rendered right now. Only a window of
-        # pages near the viewport actually gets a rendered bitmap; that
-        # window slides (rendering newly-approached pages, evicting distant
-        # ones) as the user scrolls, so memory stays bounded on long PDFs.
+        # Every page's box is precomputed from metadata alone so the
+        # scrollregion covers the whole document, while only pages near
+        # the viewport hold a rendered bitmap (bounded memory).
         self._full_layout: Dict[int, dict] = {}     # page_num -> {x, y_top, w, h, zoom}
         self._page_order: List[int] = []            # page numbers in y_top order (== numeric order)
         self._sorted_y_tops: List[float] = []        # parallel to _page_order, for bisect lookup
@@ -1045,16 +974,10 @@ class PDFViewerWidget(tk.Frame):
         
         self.canvas = tk.Canvas(canvas_frame, bg=ui_theme.resolve(ui_theme.BG_APP), highlightthickness=0)
 
-        # Scrollbar must be packed before the canvas -- pack() hands out
-        # space in packing order, and the canvas's fill=BOTH/expand=True
-        # would otherwise claim the whole frame first, leaving the
-        # scrollbar zero width (same fix already applied in ThumbnailPanel).
-        #
-        # command=self._on_scrollbar_scroll rather than plain
-        # self.canvas.yview -- dragging the thumb (or clicking the track/
-        # arrows) must trigger the same render-window sync the wheel
-        # handler does, otherwise pages you scroll to directly via the
-        # scrollbar never get rendered (only wheel-driven scrolling did).
+        # Packed before the canvas: pack() hands out space in order, and
+        # the canvas's fill=BOTH would leave the scrollbar zero width.
+        # Routed through _on_scrollbar_scroll so thumb drags sync the
+        # render window like the wheel handler does.
         scrollbar = tk.Scrollbar(
             canvas_frame, orient=tk.VERTICAL, command=self._on_scrollbar_scroll,
             width=12, bd=0, elementborderwidth=0,
@@ -1107,6 +1030,16 @@ class PDFViewerWidget(tk.Frame):
 
         self._update_display()
     
+    def clear_document(self):
+        """Drop the open document and go back to the empty state."""
+        self.document = None
+        self.current_page = 1
+        self.thumbnail_panel.load_document(None)
+        self.canvas.delete("all")
+        self._rendered_pages = {}
+        self._update_display()
+        self._update_page_label()
+
     def _update_display(self):
         """Update the canvas display"""
         if not self.document or self.document.page_count == 0:

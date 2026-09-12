@@ -75,7 +75,7 @@ class PageCard(ctk.CTkFrame):
     background thread)."""
 
     def __init__(self, parent, page_num: int, selected: bool,
-                 on_toggle: Callable[[int], None]):
+                 on_toggle: Callable[[int], None], caption_text: Optional[str] = None):
         super().__init__(parent, width=CARD_W, height=CARD_H, corner_radius=RADIUS,
                           fg_color=BG_SURFACE, border_width=1, border_color=BORDER)
         self.grid_propagate(False)
@@ -96,7 +96,7 @@ class PageCard(ctk.CTkFrame):
 
         ctk.CTkFrame(self, height=1, fg_color=BORDER_SUBTLE, corner_radius=0
                      ).pack(fill="x", padx=12)
-        self.caption = ctk.CTkLabel(self, text=f"Page {page_num}", font=font(11),
+        self.caption = ctk.CTkLabel(self, text=caption_text or f"Page {page_num}", font=font(11),
                                      text_color=TEXT_SECONDARY)
         self.caption.pack(pady=(6, 10))
 
@@ -282,16 +282,36 @@ class InsertPagesDialog(ctk.CTkToplevel):
     # ---------------------------------------------------------------- source loading
 
     def _browse(self):
-        path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")], parent=self)
-        if path:
-            self.path_entry.delete(0, "end")
-            self.path_entry.insert(0, path)
-            self._load_source(path)
+        paths = filedialog.askopenfilenames(filetypes=[("PDF files", "*.pdf")], parent=self)
+        if paths:
+            self._load_sources(list(paths))
 
     def _load_source(self, path: str):
-        if not path or not os.path.exists(path):
-            dialogs.show_error(self, "Insert Pages", "Please choose a valid PDF file.")
+        """Single-source entry point, kept for callers that pass one path."""
+        self._load_sources([path])
+
+    def _load_sources(self, paths: List[str]):
+        """Read one or more source PDFs into a single page gallery.
+
+        Pages stay in file order, and each card is captioned with its own
+        file's name + page number, so a mixed gallery doesn't leave you
+        guessing which "Page 3" you're looking at. The selection model is
+        unchanged: indices into the combined self._refs list.
+        """
+        paths = [p for p in (paths or []) if p]
+        if not paths:
             return
+        missing = [p for p in paths if not os.path.exists(p)]
+        if missing:
+            dialogs.show_error(self, "Insert Pages",
+                                "Please choose valid PDF files.\n\nNot found:\n" +
+                                "\n".join(os.path.basename(p) for p in missing))
+            return
+
+        self.path_entry.delete(0, "end")
+        self.path_entry.insert(0, paths[0] if len(paths) == 1
+                                else f"{len(paths)} files: " +
+                                     ", ".join(os.path.basename(p) for p in paths))
 
         self._load_generation += 1
         generation = self._load_generation
@@ -302,23 +322,36 @@ class InsertPagesDialog(ctk.CTkToplevel):
             w.destroy()
 
         self.insert_button.configure(state="disabled")
-        self.info_label.configure(text=f"Reading {os.path.basename(path)} ...", text_color="#C9962B")
+        reading = (os.path.basename(paths[0]) if len(paths) == 1
+                   else f"{len(paths)} files")
+        self.info_label.configure(text=f"Reading {reading} ...", text_color="#C9962B")
         self.selection_label.configure(text="")
         loading_label = ctk.CTkLabel(self.gallery, text="Loading pages...", font=font(12),
                                       text_color=TEXT_SECONDARY)
         loading_label.pack(pady=60)
 
         def worker():
+            refs: List[PageRef] = []
+            captions: List[str] = []
+            multi = len(paths) > 1
             try:
-                refs = PDFLoader.build_page_refs(path)
+                for path in paths:
+                    file_refs = PDFLoader.build_page_refs(path)
+                    name = os.path.basename(path)
+                    refs.extend(file_refs)
+                    captions.extend(
+                        f"{name} · p{i + 1}" if multi else f"Page {i + 1}"
+                        for i in range(len(file_refs)))
             except Exception as e:
                 error_message = str(e)
                 self.after(0, lambda: self._on_load_error(error_message))
                 return
-            self.after(0, lambda: self._on_refs_ready(refs, generation, loading_label))
+
+            self.after(0, lambda: self._on_refs_ready(refs, generation, loading_label,
+                                                       captions, len(paths)))
             for idx, ref in enumerate(refs):
                 if generation != self._load_generation:
-                    return  # a newer _load_source() superseded this run
+                    return  # a newer _load_sources() superseded this run
                 # zoom=1.0 at this dpi -> ~204x264px for a Letter page,
                 # comfortably bigger than the card's preview box so
                 # .thumbnail() (shrink-only) actually downscales with
@@ -337,20 +370,25 @@ class InsertPagesDialog(ctk.CTkToplevel):
         self.info_label.configure(text="Failed to read PDF.", text_color="#DC2626")
         dialogs.show_error(self, "Insert Pages", message)
 
-    def _on_refs_ready(self, refs: List[PageRef], generation: int, loading_label: ctk.CTkLabel):
+    def _on_refs_ready(self, refs: List[PageRef], generation: int, loading_label: ctk.CTkLabel,
+                        captions: Optional[List[str]] = None, file_count: int = 1):
         if generation != self._load_generation:
             return
         loading_label.destroy()
         self._refs = refs
         self._selected = set(range(len(refs)))  # all selected by default
-        name = os.path.basename(self.path_entry.get())
-        self.info_label.configure(text=f"{name} -- {len(refs)} page(s)", text_color=TEXT_SECONDARY)
+        if file_count > 1:
+            summary = f"{file_count} files -- {len(refs)} page(s)"
+        else:
+            summary = f"{os.path.basename(refs[0].source_path) if refs else ''} -- {len(refs)} page(s)"
+        self.info_label.configure(text=summary, text_color=TEXT_SECONDARY)
         self.insert_button.configure(state="normal" if refs else "disabled")
         self._update_selection_label()
 
         for idx in range(len(refs)):
             card = PageCard(self.gallery, idx + 1, idx in self._selected,
-                             on_toggle=self._on_card_toggled)
+                             on_toggle=self._on_card_toggled,
+                             caption_text=captions[idx] if captions else None)
             self.cards[idx] = card
         self._relayout_grid()
 

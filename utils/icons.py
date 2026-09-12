@@ -1,26 +1,11 @@
 """
-Small, hand-drawn vector icon set for the app's toolbar/panel buttons --
-replaces ad-hoc Unicode/emoji glyphs (folder emoji, floppy disk emoji,
-trash emoji, etc.) with a single consistent, monochrome icon language
-that matches across light/dark mode and every button variant.
+Monochrome vector icon set, drawn procedurally with PIL at 4x and
+downscaled -- no icon font or asset files, so nothing depends on a
+particular font being installed.
 
-Icons are drawn procedurally with PIL (already a hard dependency for PDF
-rendering) at 4x supersampling and downscaled with LANCZOS for clean
-anti-aliased strokes -- no external icon-font or asset files needed, and
-nothing here depends on a particular font's glyph coverage being present
-on the machine it runs on.
-
-Usage:
-    from utils import icons
-
-    btn = ctk.CTkButton(parent, text="Open", image=icons.get("open", size=16),
-                         compound="left", ...)
-
-`get()` returns a ctk.CTkImage (light/dark variants baked in via
-ui_theme's color tuples) and caches by (name, size, color) so repeated
-calls for the same icon are cheap and share the same CTkImage instance
-(important -- customtkinter/Tk need a live Python reference to a
-PhotoImage or it gets garbage-collected and the button shows blank).
+`get()` returns a cached ctk.CTkImage (light/dark baked in). Caching also
+keeps a live reference, without which Tk garbage-collects the image and
+the button renders blank.
 """
 
 from __future__ import annotations

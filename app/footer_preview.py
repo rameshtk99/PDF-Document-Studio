@@ -1,23 +1,11 @@
 """
-Live footer preview overlay -- draws the footer text on top of the PDF
-canvas using the exact same column-layout math as
-FooterGenerator.create_footer_overlay (left/right margin, line gap,
-per-column centering, {page}/{total} substitution) plus the same
-content-relative bottom-margin logic as DocumentExporter
-(compute_content_relative_bottom_margin), so what's shown here matches
-what export would actually produce -- without writing anything to disk.
+Live footer preview drawn over the PDF canvas, using the same column and
+bottom-margin math as FooterGenerator/DocumentExporter so what's shown
+matches what export produces.
 
-By default (no active "draft"), redraw() shows whatever footer is
-already committed to the Document for each currently-visible page
-(document.get_page_config(page).footer_config) -- every page that has a
-rendered bitmap on screen right now, not just pdf_viewer.current_page,
-so a page's footer doesn't disappear just because continuous scroll
-made a neighboring page "current" instead. While the user is actively
-typing in a footer panel, that panel pushes a temporary "draft" override
-via set_draft() so they see their in-progress edit live on the specific
-page it applies to; clearing the draft (on Apply, on page change, or
-after an undo/redo) falls back to showing the real, currently-committed
-state again.
+With no active draft it renders each visible page's committed footer.
+While the user types, the panel pushes a temporary draft via set_draft()
+for the page being edited; clearing it falls back to committed state.
 """
 
 import tkinter as tk

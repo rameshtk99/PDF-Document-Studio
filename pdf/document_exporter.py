@@ -1,20 +1,12 @@
 """
-Document export engine: whitespace-aware, page-by-page PDF generation.
+Whitespace-aware, page-by-page PDF export.
 
-Unlike FooterGenerator.add_footer_to_pdf (the legacy, CLI-compatible path
-which applies one flat footer to every page), DocumentExporter walks a
-Document's per-page configuration so:
+Walks a Document's per-page config: each page gets its own footer (or
+none), is checked independently for bottom whitespace, and is compressed
+only if it needs the room. Placed images are embedded too.
 
-- each page can have its own footer text/font/columns (or none at all)
-- each page is checked independently for whether it has enough bottom
-  white-space for its own footer, using WhiteSpaceDetector
-- pages that lack space receive a per-page vertical compression so the
-  original content is scaled up to fit above the footer -- there is no
-  single global shrink percentage; every page is handled independently
-- image objects placed on a page are embedded into the real output PDF
-
-This module never touches FooterGenerator.add_footer_to_pdf or the CLI
-contract in batch/cli.py -- both keep working exactly as before.
+The legacy flat-footer path (FooterGenerator.add_footer_to_pdf) and the
+CLI contract in batch/cli.py are untouched.
 """
 
 from dataclasses import dataclass, field
@@ -258,25 +250,12 @@ class DocumentExporter:
             )
             return effective_margin
 
-        # Deficit: content overlaps the footer zone.
-        # Apply MINIMUM-necessary vertical compression so the actual content
-        # bottom (at available_pts from the page bottom) is lifted exactly to
-        # required_height, leaving the configured gap between it and the footer.
-        #
-        # Minimum compression anchors the page TOP at page_h (page top stays):
+        # Content overlaps the footer zone: compress just enough to lift
+        # the content bottom to required_height, anchored at the page top.
+        # Anchoring at the top (rather than y=0) avoids over-compressing
+        # pages that already have whitespace at the bottom.
         #   scale_y = (page_h - required_height) / (page_h - available_pts)
         #   translate_y = page_h * (1 - scale_y)
-        #
-        # Verification:
-        #   y=available_pts → scale_y*available_pts + translate_y = required_height ✓
-        #   y=page_h        → scale_y*page_h + translate_y = page_h              ✓
-        #
-        # This is strictly less aggressive than the naïve formula
-        # ratio=(page_h-required_height)/page_h which anchors at y=0 and
-        # over-compresses pages that have whitespace at the bottom.
-        #
-        # The overlay is appended after the transformed content stream, so the
-        # footer sits at absolute page coordinates, unaffected by the transform.
         denominator = page_h - available_pts
         if denominator <= 0:
             # Guard: page is all blank (unreachable when deficit>0, but be safe).

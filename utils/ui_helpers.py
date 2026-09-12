@@ -6,28 +6,12 @@ import tkinter as tk
 
 
 def center_window(win, parent, width: int, height: int, margin: int = 80):
-    """Position `win` centered over `parent`'s current on-screen position,
-    clamped so it never lands partly off-screen -- AND clamped so its
-    requested width/height never exceed the actual screen size (minus
-    `margin` for taskbar/title bar breathing room), so a dialog sized for
-    a large monitor doesn't get cut off on a small laptop screen. Sets
-    the window's full geometry (size + position) in one call -- pass the
-    same width/height you'd otherwise give a plain
-    win.geometry(f"{width}x{height}") call.
+    """Size and place `win` centered over `parent`, clamped to the screen.
 
-    A plain win.geometry("WxH") (no position) leaves placement up to the
-    window manager, which on Windows tends to stack new windows near the
-    top-left of the screen rather than over the app -- this is what
-    should be called instead, right after construction. Callers whose
-    dialog has a scrollable content area should size that area to expand
-    (row/columnconfigure weight, not plain pack()) so shrinking to fit
-    the screen makes that area scroll rather than clipping other content
-    (e.g. buttons) -- clamping the outer window size alone doesn't give
-    you that for free.
-
-    Toplevel windows keep their normal title bar (nothing here disables
-    it), so they remain draggable/movable by the user exactly as any
-    other window is.
+    Use instead of a bare geometry("WxH"), which leaves placement to the
+    window manager (Windows stacks new windows top-left, not over the
+    app). Dialogs that can be shrunk to fit should have an expanding
+    scroll area, or content gets clipped rather than scrolled.
     """
     screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
     max_w = max(200, screen_w - margin)

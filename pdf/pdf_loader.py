@@ -147,6 +147,54 @@ class PDFLoader:
             raise RuntimeError(f"Failed to load PDF: {e}")
     
     @staticmethod
+    def load_pdfs(pdf_paths: List[str]) -> Optional[Document]:
+        """Load several PDFs into one Document, in the order given.
+
+        Nothing is copied: each page stays a PageRef to its own source
+        file, so this costs the same metadata-only read as opening them
+        separately. The first file supplies the Document's identity;
+        metadata['source_files'] keeps the ordered list. A one-element
+        list behaves exactly like load_pdf().
+        """
+        paths = list(pdf_paths or [])
+        if not paths:
+            raise RuntimeError("No PDF files given")
+        if len(paths) == 1:
+            return PDFLoader.load_pdf(paths[0])
+
+        doc = PDFLoader.load_pdf(paths[0])
+        source_files = [{'path': paths[0], 'name': os.path.basename(paths[0]),
+                          'page_count': doc.page_count}]
+
+        for path in paths[1:]:
+            is_valid, error = PDFLoader.validate_pdf(path)
+            if not is_valid:
+                raise RuntimeError(f"Invalid PDF: {error}")
+            refs = PDFLoader.build_page_refs(path)
+            doc.pages.extend(refs)
+            source_files.append({'path': path, 'name': os.path.basename(path),
+                                  'page_count': len(refs)})
+
+        doc.page_count = len(doc.pages)
+        # metadata['pages'] mirrors doc.pages and is read by older code
+        # paths (get_page_info / get_all_pages_info), so it has to grow
+        # with the combined page list rather than stay at file 1's.
+        doc.metadata['pages'] = [
+            {
+                'page_number': i + 1,
+                'width': ref.width,
+                'height': ref.height,
+                'rotation': ref.rotation,
+                'aspect_ratio': (ref.width / ref.height) if ref.height > 0 else 1.0,
+            }
+            for i, ref in enumerate(doc.pages)
+        ]
+        doc.metadata['page_count'] = doc.page_count
+        doc.metadata['source_files'] = source_files
+        doc.set_modified(False)
+        return doc
+
+    @staticmethod
     def get_page_info(doc: Document, page_num: int) -> Optional[Dict[str, Any]]:
         """
         Get metadata for a specific page

@@ -11,6 +11,7 @@ ImageManager / Document, so Ctrl+Z / Ctrl+Y really move, resize, add,
 delete, or change properties of objects and footer settings.
 """
 
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 
 from app.undo_redo import Command
@@ -444,6 +445,58 @@ class ResetPageFooterCommand(Command):
         page_config = self.document.get_page_config(self.page_number)
         page_config.footer_config = self.before_config
         self.document.set_page_config(self.page_number, page_config)
+        self.document.set_modified(True)
+
+    def redo(self):
+        self.execute()
+
+
+class ChangePagesFooterCommand(Command):
+    """Apply one footer config to a specific set of pages ("Apply to
+    selected pages" / a page range), as a single undo step.
+
+    This writes per-page overrides and deliberately leaves the global
+    footer and every other page alone -- that's the whole point of a
+    scoped apply, and it's what makes it composable: footer A on pages
+    1-3, footer B on 7-9, nothing on the rest.
+
+    Undo restores each touched page to exactly what it had before, which
+    for a page with no previous override means removing the override
+    again so it falls back to inheriting the global footer (matching
+    Document.get_page_config's own fallback).
+    """
+
+    def __init__(self, document: Document, page_numbers: List[int],
+                 after_config: FooterConfig):
+        super().__init__()
+        self.document = document
+        self.page_numbers = sorted(set(page_numbers))
+        self.after_config = after_config
+        # page_num -> PageConfig it had before, or None if it had no
+        # override at all.
+        self._before: Dict[int, Optional[PageConfig]] = {}
+        count = len(self.page_numbers)
+        self.description = f"Apply footer to {count} page{'s' if count != 1 else ''}"
+
+    def execute(self):
+        for page_num in self.page_numbers:
+            if page_num not in self._before:
+                self._before[page_num] = self.document.page_configs.get(page_num)
+            page_config = self.document.get_page_config(page_num)
+            # get_page_config returns a fresh object when there's no
+            # override yet, so copy the config in rather than mutating
+            # whatever the caller handed us across several pages.
+            page_config.footer_config = replace(self.after_config)
+            self.document.set_page_config(page_num, page_config)
+        self.document.set_modified(True)
+
+    def undo(self):
+        for page_num in self.page_numbers:
+            previous = self._before.get(page_num)
+            if previous is None:
+                self.document.page_configs.pop(page_num, None)
+            else:
+                self.document.page_configs[page_num] = previous
         self.document.set_modified(True)
 
     def redo(self):

@@ -150,14 +150,10 @@ class Document:
                     return obj
         return None
     
-    # ------------------------------------------------------------------ page management
-    #
-    # delete_page/move_page/insert_pages are the ONLY place page order
-    # changes. Every other subsystem (ImageManager, QuickFooterPanel,
-    # DocumentExporter's per-page loop) keeps using plain
-    # 1-indexed *display position* exactly as before -- these methods just
-    # make sure page_configs/PageObject.page_number are carried along to
-    # each page's new position instead of staying pinned to the old index.
+    # ---- page management ---------------------------------------------
+    # The only place page order changes. Everything else keeps using
+    # 1-indexed display positions; these methods carry page_configs and
+    # PageObject.page_number across to each page's new position.
 
     def _renumber_page_configs(self, old_to_new: Dict[int, Optional[int]]):
         """Rebuild page_configs with every key (and each contained

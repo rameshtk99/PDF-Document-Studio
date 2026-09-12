@@ -157,20 +157,11 @@ class WhiteSpaceDetector:
         # Convert to numpy array
         img_array = np.array(img_gray)
 
-        # Define "white" as high values (>240 in 0-255 range)
-        # Content is darker pixels
         white_threshold = 240
 
-        # A row/column counts as "content" once at least this fraction of
-        # its pixels are dark -- NOT a row/column *average* dropping below
-        # the threshold. A thin line of text only darkens a small slice of
-        # a row's pixels, so its row-mean can stay above 240 (e.g.
-        # verified: a 12pt text line's darkest rows average ~242-247,
-        # still reading as "white" by a mean-based check) even though the
-        # text is clearly present -- which made the detector think content
-        # ended higher up the page than it actually did, letting anything
-        # relying on this boundary (e.g. content-relative footer
-        # placement) sit too close to, or overlap, real content.
+        # Fraction of dark pixels, not the row/column mean: a thin text
+        # line barely moves the mean (~242-247, still "white"), so a
+        # mean-based check reported content ending higher than it does.
         min_dark_fraction = 0.003
 
         height, width = img_array.shape

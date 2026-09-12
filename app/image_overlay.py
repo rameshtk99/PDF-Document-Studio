@@ -1,45 +1,14 @@
 """
-Interactive image layer: multi-select, group, rotate, Shift-resize, copy/paste.
+Interactive image layer on the PDF canvas: select, move, resize, rotate,
+group, copy/paste, duplicate-drag.
 
-Coordinate convention: PageObject x/y are PDF points, origin bottom-left,
-y increasing upward.  Canvas pixels have origin top-left, y increasing
-downward.  All conversion between the two is done by `_pdf_to_canvas` /
-`_canvas_to_pdf` using the page height and the viewer's current render scale.
+PageObject x/y are PDF points (origin bottom-left); canvas pixels are
+top-left. `_pdf_to_canvas` / `_canvas_to_pdf` convert between them.
+Rotation and bounding-box math lives in utils.geometry, shared with
+pdf/pdf_handler.py so the selection box, preview and export agree.
 
-All rotation / bounding-box math (selection box shape, resize-handle
-positions, resize-along-local-axes) is delegated to utils.geometry, the
-same module pdf/pdf_handler.py uses to rasterize the export/print image --
-so the editor's rotated selection box, the live preview, and the exported
-PDF always agree on exactly where an object's corners are.
-
-Interaction modes
------------------
-MOVE       -- drag any selected object; all selected objects move together
-RESIZE     -- drag a corner/edge handle; all selected objects scale from
-              the anchor corner, along the selection's own (possibly
-              rotated) local axes.  Hold Shift -> aspect ratio locked.
-ROTATE     -- drag the rotation handle (circle above selection box);
-              all selected objects orbit the group center and spin by
-              the same delta.  Completely free (any angle, no snapping).
-DUPLICATE  -- Ctrl+Shift+drag a selected object: creates a copy (undoable)
-              and drags the copy; the original never moves.
-
-Selection
----------
-Click               -> select single object (auto-expands to whole group)
-Ctrl+Click          -> add/remove object from selection (whole group added)
-Ctrl+Shift+drag     -> duplicate selection and drag the duplicate
-Right-click         -> context menu (Copy/Paste/Group/Ungroup/Delete/
-                       Bring to Front/Send to Back)
-Click empty space   -> deselect all
-
-Keyboard (bound globally in editor_window.py so focus never matters)
---------
-Ctrl+G          -> group selected images
-Ctrl+Shift+G    -> ungroup selected images
-Ctrl+C          -> copy selected images to clipboard
-Ctrl+V          -> paste clipboard to current page (offset +15pt)
-Delete          -> handled by editor_window; no change needed here
+Ctrl+G/Ctrl+Shift+G/Ctrl+C/Ctrl+V and Delete are bound globally in
+editor_window.py, not here, so focus never matters.
 """
 
 import math
@@ -109,12 +78,9 @@ class ImageOverlayController:
         self._resize_handle: Optional[str] = None
         self._initial_states: Dict[str, dict] = {}   # id -> snapshot at drag start
 
-        # Set only for the duration of a Ctrl+Shift+drag: the PasteObjectsCommand
-        # that created the duplicate(s) already sitting on the undo stack. Letting
-        # _commit_move() patch that same command's snapshot positions (instead of
-        # pushing a second MoveObjectCommand/MoveManyCommand) keeps "duplicate and
-        # drag" a single undo step, matching the rest of the app's one-gesture ==
-        # one-undo-step convention.
+        # Set only during a Ctrl+Shift+drag, so _commit_move() can patch
+        # that command instead of pushing a second one -- one gesture,
+        # one undo step.
         self._duplicate_drag_cmd: Optional[PasteObjectsCommand] = None
 
         # Resize/rotate operate in the selection's own (possibly rotated)
@@ -136,11 +102,8 @@ class ImageOverlayController:
         canvas.bind("<B1-Motion>",       self._on_motion,  add="+")
         canvas.bind("<ButtonRelease-1>", self._on_release, add="+")
         canvas.bind("<Button-3>",        self._on_right_click, add="+")
-        # Ctrl+C / Ctrl+V / Ctrl+G / Ctrl+Shift+G are bound once, globally,
-        # in editor_window.py's _bind_shortcuts -- binding them again here
-        # on the canvas would fire them twice (root's bind_all tag is
-        # checked in addition to the focused widget's own bindings) and
-        # was the root cause of copy/paste feeling unreliable/duplicated.
+        # Ctrl+C/V/G are bound globally in editor_window; binding them
+        # here too would fire each one twice.
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -651,13 +614,9 @@ class ImageOverlayController:
                 moves[image_id] = (snap['x'], snap['y'], obj.x, obj.y)
 
         if self._duplicate_drag_cmd is not None:
-            # Ctrl+Shift+drag: the duplicate(s) are already a single
-            # PasteObjectsCommand on the undo stack (pushed in
-            # _begin_duplicate_drag). Patch that command's own snapshot
-            # positions to the final dragged location instead of pushing a
-            # second Move command -- one undo now removes the whole
-            # duplicate-and-drag gesture, and redo recreates it already in
-            # the dragged spot.
+            # Ctrl+Shift+drag: patch the existing PasteObjectsCommand's
+            # snapshots instead of pushing a second Move, so the whole
+            # duplicate-and-drag gesture is one undo step.
             cmd = self._duplicate_drag_cmd
             self._duplicate_drag_cmd = None
             if moves:
@@ -837,13 +796,9 @@ class ImagePropertiesPanel(ctk.CTkFrame):
                  **kwargs):
         kwargs.setdefault('fg_color', ui_theme.BG_APP)
         kwargs.setdefault('corner_radius', 0)
-        # CTkFrame defaults to height=200 when not given one -- with zero
-        # packed children (the collapsed/nothing-selected state) there's
-        # nothing for pack_propagate to shrink-wrap to, so it silently
-        # falls back to that 200px default instead of ~0, reserving a
-        # large dead strip of the side panel even while "hidden". An
-        # explicit height=1 collapses correctly; set_enabled(True) still
-        # grows it to fit the real form via pack_propagate as normal.
+        # CTkFrame defaults to height=200; with no packed children
+        # (collapsed state) nothing shrink-wraps it, so it would reserve
+        # 200px while "hidden".
         kwargs.setdefault('height', 1)
         super().__init__(parent, **kwargs)
         self.undo_manager = undo_manager

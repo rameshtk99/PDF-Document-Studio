@@ -1,19 +1,12 @@
 """
-Compact footer preview -- a small always-visible thumbnail of the footer
-band as it will actually be laid out on the page, shown right next to the
-fields that drive it.
+Compact thumbnail of the footer band, shown next to the fields that drive
+it.
 
-The live on-canvas preview (FooterPreviewController) is the accurate,
-to-scale one, but it only shows the page currently scrolled into view and
-is easy to lose track of while typing in the side panel. This widget is
-the at-a-glance companion: it mirrors the real column math from
-FooterGenerator.create_footer_overlay (equal-share columns between the
-left/right margins, text centered per column, line 1 stacked above line 2
-with the configured gap, {page}/{total} substituted) so the column
-structure and balance read correctly -- but it clamps the font to a
-legible minimum instead of scaling the page's real point size down to the
-handful of pixels a 300px-wide panel would give it. Relative column
-positions are true; absolute text size is not.
+Mirrors FooterGenerator's column math (equal-share columns between the
+margins, centered per column, line 1 above line 2, {page}/{total}
+substituted) so the layout reads true, but clamps text to a legible
+minimum instead of scaling real point sizes down to a few pixels.
+Relative column positions are accurate; absolute text size is not.
 """
 
 import tkinter as tk

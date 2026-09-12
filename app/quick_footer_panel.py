@@ -14,7 +14,7 @@ import json
 import os
 import tkinter as tk
 import tkinter.font as tkFont
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import customtkinter as ctk
 
@@ -32,44 +32,60 @@ from utils.ui_theme import (
 from utils.widgets import (
     create_button, create_icon_button, CollapsibleSection, NumberSpinner,
 )
-from app.document_commands import ChangeGlobalFooterCommand
+from app.document_commands import ChangeGlobalFooterCommand, ChangePagesFooterCommand
 from app.footer_mini_preview import FooterMiniPreview
+from app.insert_pages_dialog import parse_page_range
 from app import modern_dialogs as dialogs
 
 _NO_DRAFT_SENTINEL = "-- Select Draft --"
 
+SCOPE_ALL = "All pages"
+SCOPE_SELECTED = "Selected pages"
+SCOPE_RANGE = "Page range"
+_SCOPES = [SCOPE_ALL, SCOPE_SELECTED, SCOPE_RANGE]
+
+
+def _format_page_list(pages: List[int], limit: int = 8) -> str:
+    """Render page numbers as compact runs -- "1-3, 7, 10-12" -- so a
+    confirmation about 40 pages doesn't print 40 numbers."""
+    pages = sorted(set(pages))
+    if not pages:
+        return "none"
+    runs, start, prev = [], pages[0], pages[0]
+    for page in pages[1:]:
+        if page == prev + 1:
+            prev = page
+            continue
+        runs.append((start, prev))
+        start = prev = page
+    runs.append((start, prev))
+
+    parts = [str(a) if a == b else f"{a}-{b}" for a, b in runs]
+    if len(parts) > limit:
+        return ", ".join(parts[:limit]) + f", +{len(parts) - limit} more"
+    return ", ".join(parts)
+
 
 class QuickFooterPanel(ctk.CTkScrollableFrame):
-    """Flat, same-footer-on-every-page editor with live preview.
+    """Footer editor with live preview, applied to all pages or a scope.
 
-    (A version of this pinned the Apply/Export/Compress row outside the
-    scroll area so it would always stay put at the panel's bottom edge.
-    That's the "right" layout on paper, but CTkScrollableFrame turned out
-    to have an internal overlay that silently painted over any sibling
-    placed below it once the panel got tall -- the buttons were still
-    there per grid/pack geometry, just never actually rendered. Reverted
-    to the simpler single-scroll-area layout, which doesn't have a
-    sibling for that overlay to cover.)
+    Everything lives in one scroll area. Pinning the action row outside
+    it doesn't work: CTkScrollableFrame has an internal overlay that
+    paints over any sibling placed below it once the panel gets tall.
     """
 
     def __init__(self, parent, undo_manager=None,
                  on_preview_changed: Optional[Callable[[Optional[FooterConfig], int], None]] = None,
                  on_export_requested: Optional[Callable] = None,
-                 on_compress_requested: Optional[Callable] = None, **kwargs):
+                 on_compress_requested: Optional[Callable] = None,
+                 on_applied: Optional[Callable] = None, **kwargs):
         """
         Args:
-            parent: Parent widget
-            undo_manager: Shared UndoRedoManager -- "Apply All"
-                pushes a real, undo-able command here
-            on_preview_changed: Callback(draft_footer_config, page_number)
-                fired on every keystroke/font change for the live PDF
-                preview; called with (None, page_number) to clear the
-                draft. page_number is always the viewer's current page,
-                since this panel applies uniformly to every page.
-            on_export_requested: Callback for the "Export PDF..." button
-                (exports as-is, no compression)
-            on_compress_requested: Callback for the "Compress PDF..."
-                button (exports, then runs it through the compressor)
+            undo_manager: shared UndoRedoManager; Apply pushes a command here
+            on_preview_changed: callback(draft_config, page_number) per
+                keystroke for the live preview; (None, page) clears the draft
+            on_export_requested / on_compress_requested: action callbacks
+            on_applied: fired after a footer is committed
         """
         super().__init__(parent, fg_color="transparent", **kwargs)
         self.document: Optional[Document] = None
@@ -77,7 +93,11 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
         self.on_preview_changed = on_preview_changed
         self.on_export_requested = on_export_requested
         self.on_compress_requested = on_compress_requested
+        self.on_applied = on_applied
         self.get_current_page: Optional[Callable[[], int]] = None  # set by editor_window
+        # Set by editor_window -- returns the page numbers currently
+        # selected in the Pages panel, for the "Selected pages" scope.
+        self.get_selected_pages: Optional[Callable[[], List[int]]] = None
 
         available = get_available_tk_fonts()
         self.fonts_available = get_filtered_fonts(available) or ['Helvetica']
@@ -95,6 +115,8 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
 
         self.drafts: dict = self._load_drafts_from_disk()
         self.draft_var = tk.StringVar(value=_NO_DRAFT_SENTINEL)
+        self.scope_var = tk.StringVar(value=SCOPE_ALL)
+        self.range_var = tk.StringVar(value="")
 
         self._build_ui()
 
@@ -110,9 +132,13 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
         self.preview = FooterMiniPreview(self)
         self.preview.pack(fill="x")
 
+        # status_label is created first because the scope row packs its
+        # conditional extras `before=` it; building it after would leave
+        # _on_scope_changed referencing a widget that doesn't exist yet.
         self.status_label = ctk.CTkLabel(self, text="", font=font(10), text_color=TEXT_SECONDARY,
                                           anchor="w")
-        self.status_label.pack(fill="x", pady=(SPACE_8, SPACE_4))
+        self.status_label.pack(fill="x", pady=(SPACE_4, SPACE_4))
+        self._build_scope_row()
 
         # ---- actions -- one row, not three stacked full-width buttons ----------
         actions_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -128,6 +154,58 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
                       variant="secondary", height=30).pack(side="left", fill="x", expand=True)
 
         self._set_columns()
+
+    def _build_scope_row(self):
+        """Where Apply lands: every page, the pages selected in the Pages
+        panel, or a typed range. Sits directly above Apply because it
+        changes what that button does."""
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", pady=(SPACE_8, 0))
+
+        ctk.CTkLabel(row, text="Apply to", font=font(11), text_color=TEXT_SECONDARY
+                     ).pack(side="left", padx=(0, 6))
+        self.scope_menu = ctk.CTkOptionMenu(
+            row, variable=self.scope_var, values=_SCOPES, command=self._on_scope_changed,
+            fg_color=BG_SUBTLE, button_color=SECONDARY_BTN,
+            button_hover_color=SECONDARY_BTN_HOVER, text_color=TEXT_PRIMARY,
+            dropdown_fg_color=BG_SURFACE, font=font(11), height=26, width=1)
+        self.scope_menu.pack(side="left", fill="x", expand=True)
+
+        # Only meaningful for the range scope -- packed/unpacked rather
+        # than disabled, so the row stays as short as the scope needs.
+        self.range_entry = ctk.CTkEntry(
+            self, textvariable=self.range_var, height=26, corner_radius=RADIUS_SM,
+            border_color=BORDER, fg_color=BG_SUBTLE, font=font(11),
+            placeholder_text='e.g. 1-3, 7')
+        self.scope_hint = ctk.CTkLabel(self, text="", font=font(10),
+                                        text_color=TEXT_SECONDARY, anchor="w")
+        self._scope_row = row
+        self._on_scope_changed()
+
+    def _on_scope_changed(self, _value=None):
+        scope = self.scope_var.get()
+
+        self.range_entry.pack_forget()
+        self.scope_hint.pack_forget()
+
+        # Packed after the scope row so the field/hint sits under the
+        # dropdown it belongs to, not above it.
+        if scope == SCOPE_RANGE:
+            self.range_entry.pack(fill="x", pady=(SPACE_4, 0), after=self._scope_row)
+        elif scope == SCOPE_SELECTED:
+            selected = list(self.get_selected_pages() or []) if self.get_selected_pages else []
+            if selected:
+                text = f"{len(selected)} page(s) selected: {_format_page_list(selected)}"
+            else:
+                text = "Select pages in the Pages panel (Ctrl/Shift+click)."
+            self.scope_hint.configure(text=text)
+            self.scope_hint.pack(fill="x", pady=(SPACE_4, 0), after=self._scope_row)
+
+    def refresh_scope_hint(self):
+        """Called by editor_window when the Pages-panel selection changes,
+        so the 'N pages selected' line doesn't go stale."""
+        if self.scope_var.get() == SCOPE_SELECTED:
+            self._on_scope_changed()
 
     def _build_columns_section(self):
         section = CollapsibleSection(self, "Footer text", expanded=True)
@@ -240,9 +318,9 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
         self.sync_from_document()
 
     def sync_from_document(self):
-        """Populate the fields from Document.global_settings.footer_config
-        -- called on load, and after undo/redo, so this panel never shows
-        stale values that no longer match the document."""
+        """Populate the fields from the document's global footer -- on
+        load, and after undo/redo, so the panel doesn't show values the
+        document no longer has."""
         if not self.document:
             return
         cfg = self.document.global_settings.footer_config
@@ -253,17 +331,27 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
         self.line_gap_var.set(cfg.line_gap)
         self.compress_var.set(getattr(cfg, 'compress_content', True))
         self._suspend = False
-        self._set_columns(preserve_values=cfg.text_columns)
+
+        # An apply scoped to some pages deliberately leaves the global
+        # footer empty, so syncing from it would wipe what the user just
+        # typed. Only overwrite the text when the document actually has
+        # some -- never destroy typed text to show a blank.
+        columns = cfg.text_columns
+        if any(l1 or l2 for l1, l2 in columns):
+            self._set_columns(preserve_values=columns)
+        else:
+            self._set_columns(preserve_values=self._current_column_values())
+
+    def _current_column_values(self):
+        return [(l1.get(), l2.get()) for l1, l2 in self.footer_entries]
 
     def _set_columns(self, preserve_values=None):
         if self.entries_frame:
             self.entries_frame.destroy()
         self.entries_frame = ctk.CTkFrame(self.entries_container, fg_color="transparent")
         self.entries_frame.pack(fill="x", padx=SPACE_8, pady=SPACE_4)
-        # Entry columns (1 and 3) stretch to fill whatever width the side
-        # panel/window currently has; label columns (0 and 2) stay
-        # content-sized -- so the text boxes grow/shrink as the panel is
-        # resized instead of being stuck at a fixed character width.
+        # Entry columns stretch with the panel; label columns stay
+        # content-sized.
         self.entries_frame.columnconfigure(1, weight=1)
         self.entries_frame.columnconfigure(3, weight=1)
 
@@ -301,11 +389,9 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
 
     @staticmethod
     def _as_ctk_font(tk_font_obj: tkFont.Font) -> ctk.CTkFont:
-        """The live footer preview needs a real tkinter.font.Font (for
-        accurate PDF-point sizing math elsewhere), but CTkEntry's `font`
-        argument wants a CTkFont for correct scaling/theming -- build the
-        matching CTkFont here rather than changing what _current_font()
-        returns everywhere else it's used."""
+        """CTkEntry wants a CTkFont, while the sizing math elsewhere needs a
+        real tkinter Font -- convert here rather than changing
+        _current_font()'s return type for every other caller."""
         return ctk.CTkFont(family=tk_font_obj.cget('family'), size=tk_font_obj.cget('size'))
 
     def _current_font(self) -> tkFont.Font:
@@ -363,7 +449,41 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
             return
         self.on_preview_changed(self._build_footer_config_from_ui(), self._current_viewer_page())
 
+    # ------------------------------------------------------------------ apply
+
+    def _resolve_target_pages(self) -> Optional[List[int]]:
+        """Which pages the current scope means, or None for "all pages".
+
+        Raises ValueError with a user-facing message when the scope is
+        set but resolves to nothing -- silently applying to everything
+        would be the worst possible guess.
+        """
+        scope = self.scope_var.get()
+        total = self.document.page_count
+
+        if scope == SCOPE_ALL:
+            return None
+
+        if scope == SCOPE_SELECTED:
+            pages = list(self.get_selected_pages() or [])
+            if not pages:
+                raise ValueError(
+                    "No pages are selected.\n\nSelect page thumbnails in the Pages panel "
+                    "(Ctrl+click for several, Shift+click for a run), or switch the scope "
+                    "back to All pages.")
+            return [p for p in pages if 1 <= p <= total]
+
+        spec = self.range_var.get().strip()
+        if not spec:
+            raise ValueError('Enter a page range, e.g. "1-3, 7" or "all".')
+        try:
+            return parse_page_range(spec, total)
+        except ValueError as e:
+            raise ValueError(f"{e}\n\nUse a form like \"1-3, 7\" or \"all\".")
+
     def _apply_to_all(self):
+        """Commit the footer -- to every page, or only to the pages the
+        current scope picks out. Name kept for existing callers."""
         if not self.document:
             dialogs.show_error(self, "No Document", "Open a PDF first.")
             return
@@ -372,19 +492,39 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
             dialogs.show_error(self, "Empty Footer", "Enter at least one footer line.")
             return
 
-        before_global = self.document.global_settings.footer_config
-        before_page_configs = dict(self.document.page_configs)
+        try:
+            target_pages = self._resolve_target_pages()
+        except ValueError as e:
+            dialogs.show_error(self, "Nothing to Apply To", str(e))
+            return
 
-        if self.undo_manager:
-            self.undo_manager.execute(ChangeGlobalFooterCommand(
-                self.document, before_global, after_config, before_page_configs))
+        if target_pages is None:
+            before_global = self.document.global_settings.footer_config
+            before_page_configs = dict(self.document.page_configs)
+            if self.undo_manager:
+                self.undo_manager.execute(ChangeGlobalFooterCommand(
+                    self.document, before_global, after_config, before_page_configs))
+            else:
+                self.document.global_settings.footer_config = after_config
+                self.document.page_configs.clear()
+            summary = "Footer applied to all pages."
         else:
-            self.document.global_settings.footer_config = after_config
-            self.document.page_configs.clear()
+            command = ChangePagesFooterCommand(self.document, target_pages, after_config)
+            if self.undo_manager:
+                self.undo_manager.execute(command)
+            else:
+                command.execute()
+            count = len(sorted(set(target_pages)))
+            summary = (f"Footer applied to {count} page{'s' if count != 1 else ''} "
+                       f"({_format_page_list(target_pages)}).\n\n"
+                       "Other pages keep whatever footer they already had.")
 
         if self.on_preview_changed:
             self.on_preview_changed(None, self._current_viewer_page())  # clear draft
-        dialogs.show_info(self, "Applied", "Footer applied to all pages. Use Export PDF to save it to a file.")
+        if self.on_applied:
+            self.on_applied()
+        dialogs.show_info(self, "Applied",
+                           f"{summary}\n\nUse Export PDF to save it to a file.")
 
     def _request_export(self):
         if self.on_export_requested:

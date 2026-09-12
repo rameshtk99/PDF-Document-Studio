@@ -1,22 +1,10 @@
 """
-Reusable, pre-styled widget factories built on top of ui_theme's design
-tokens + icons/tooltip -- the single place that defines what a "primary
-button" or "icon-only toolbar button" looks like, so every panel/dialog
-that needs one gets the same visual language instead of hand-rolling
-CTkButton(...) with slightly different colors/padding each time.
+Pre-styled widget factories over ui_theme's tokens -- one place that
+defines what a "primary button" or "icon-only toolbar button" looks like.
 
-Button variants (see create_button's `variant` arg):
-    primary      - filled accent, white text. The one standout action in
-                   a given area (Export PDF, Open PDF).
-    secondary    - filled neutral surface, normal text. Common actions
-                   that aren't THE primary one (Save Project, Add Image).
-    tertiary     - transparent until hovered ("ghost"). Compact utility
-                   actions (Undo, Redo, zoom steps), usually icon-only
-                   + tooltip. `ghost` is kept as an alias.
-    destructive  - filled danger color. Anything that deletes/removes.
-    danger_ghost - tertiary weight, danger color. Destructive actions
-                   that shouldn't shout (inline "delete this draft").
-    toolbar      - like tertiary, sized for a dense command-bar row.
+Button variants: primary (the one standout action), secondary (common
+actions), tertiary/ghost (compact utilities, usually icon-only +
+tooltip), destructive, danger_ghost, toolbar.
 """
 
 from __future__ import annotations
@@ -51,11 +39,7 @@ def create_button(parent, text: str = "", command: Optional[Callable] = None,
                    icon_size: int = 15, width: int = 0, height: int = 32,
                    font_weight: Optional[str] = None, tooltip: Optional[str] = None,
                    **kwargs) -> ctk.CTkButton:
-    """A single labeled (optionally icon+label) button in one of the
-    standard variants. `disabled_state_aware` styling (dimmer on
-    state='disabled') comes for free from customtkinter's own handling of
-    fg_color/text_color once disabled -- callers just call
-    .configure(state='disabled')."""
+    """A labeled (optionally icon+label) button in a standard variant."""
     style = _VARIANTS[variant]
     weight = font_weight or ("bold" if variant in ("primary", "destructive") else "normal")
     image = icon_lib.get(icon, size=icon_size, color=style["icon_color"]) if icon else None
@@ -68,8 +52,7 @@ def create_button(parent, text: str = "", command: Optional[Callable] = None,
         **kwargs,
     )
     if tooltip:
-        # Kept on the widget so callers whose button changes meaning
-        # (a show/hide toggle) can retarget the tooltip text later.
+        # Kept so show/hide toggles can retarget the text later.
         btn.tooltip = tooltip_lib.attach(btn, tooltip)
     return btn
 
@@ -88,8 +71,7 @@ def create_icon_button(parent, icon: str, command: Optional[Callable] = None,
         hover_color=style["hover_color"], **kwargs,
     )
     if tooltip:
-        # Kept on the widget so callers whose button changes meaning
-        # (a show/hide toggle) can retarget the tooltip text later.
+        # Kept so show/hide toggles can retarget the text later.
         btn.tooltip = tooltip_lib.attach(btn, tooltip)
     return btn
 
@@ -101,15 +83,10 @@ def vertical_separator(parent, height: int = 22, pad: int = ui_theme.SPACE_8) ->
 
 
 class SegmentedTabs(ctk.CTkFrame):
-    """Editorial-style tab navigation -- text labels on a shared thin
-    track, active tab marked with a 2px accent underline + bold text,
-    inactive tabs are plain muted text. Deliberately NOT a pill/segmented
-    button pair (that reads as two buttons, not tabs).
+    """Tab bar: muted text labels, active one underlined in accent.
 
-    API mirrors the subset of ctk.CTkTabview this app actually uses:
-        tabs = SegmentedTabs(parent)
-        page = tabs.add("Quick Footer")   # returns a frame -- pack content into it
-        tabs.pack(fill="both", expand=True)
+    Mirrors the bit of ctk.CTkTabview this app uses -- add(name) returns
+    a frame to pack content into.
     """
 
     def __init__(self, parent, **kwargs):
@@ -167,14 +144,11 @@ class SegmentedTabs(ctk.CTkFrame):
 
 
 class CollapsibleSection(ctk.CTkFrame):
-    """One titled, click-to-collapse group of related controls -- the
-    building block for a property inspector that shows a handful of
-    section headers rather than every field in the panel at once.
+    """A titled, click-to-collapse group of controls.
 
-    Content goes into `.body`; an optional small control (a count field,
-    an "apply" tick) can be docked at the right end of the header row via
-    `.header_slot`, and it stays clickable rather than toggling the
-    section.
+    Content goes in `.body`; a small control (a count field, an apply
+    tick) can dock at the right of the header via `.header_slot` and
+    stays clickable rather than toggling the section.
 
         sec = CollapsibleSection(parent, "Typography")
         sec.pack(fill="x")
