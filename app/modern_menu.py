@@ -90,17 +90,20 @@ class ModernMenuBar(ctk.CTkFrame):
         button = self._buttons[menu_name]
 
         x = button.winfo_rootx()
-        y = button.winfo_rooty() + button.winfo_height()
+        y = button.winfo_rooty() + button.winfo_height() + 4
 
-        # Calculate menu height
-        separator_h = 1
-        item_h = 28
-        height = sum(separator_h if item.is_separator else item_h for item in items) + 8
+        # Calculate menu height (dynamic based on items)
+        separator_h = 8
+        item_h = 32
+        height = sum(separator_h if item.is_separator else item_h for item in items) + 12
+
+        # Width should accommodate longest label + shortcut
+        width = 300
 
         # Create floating menu window
         dropdown = tk.Toplevel(self.master)
         dropdown.wm_overrideredirect(True)
-        dropdown.geometry(f"280x{height}+{x}+{y}")
+        dropdown.geometry(f"{width}x{height}+{x}+{y}")
         dropdown.configure(bg=ui_theme.resolve(ui_theme.BG_ELEVATED))
 
         menu_frame = tk.Frame(dropdown, bg=ui_theme.resolve(ui_theme.BG_ELEVATED),
@@ -122,7 +125,7 @@ class ModernMenuBar(ctk.CTkFrame):
     def _add_menu_item_widget(self, parent, item: ModernMenuItem, dropdown_window):
         """Create a single menu item widget."""
         item_frame = tk.Frame(parent, bg=ui_theme.resolve(ui_theme.BG_ELEVATED),
-                              highlightthickness=0, height=28)
+                              highlightthickness=0, height=32)
         item_frame.pack(fill=tk.X, padx=4, pady=2)
         item_frame.pack_propagate(False)
 
@@ -134,34 +137,41 @@ class ModernMenuBar(ctk.CTkFrame):
 
         def on_hover(hovering: bool):
             color = ui_theme.resolve(ui_theme.BG_HOVER) if hovering else ui_theme.resolve(ui_theme.BG_ELEVATED)
-            for w in [item_frame, label_widget, accel_widget]:
+            for w in widgets_to_bind:
                 w.configure(bg=color)
 
-        # Icon + Label
+        # Keep reference to widgets for hover
+        widgets_to_bind = [item_frame]
+
+        # Icon + Label (left side)
         if item.icon:
+            icon_img = icon_lib.get(item.icon, size=14, color=ui_theme.TEXT_SECONDARY)
             icon_label = tk.Label(
-                item_frame, text="",
-                image=icon_lib.get(item.icon, size=14, color=ui_theme.TEXT_SECONDARY),
-                bg=ui_theme.resolve(ui_theme.BG_ELEVATED), bd=0, highlightthickness=0,
-                width=20, height=20)
-            icon_label.pack(side=tk.LEFT, padx=(4, 8))
+                item_frame, image=icon_img, text="",
+                bg=ui_theme.resolve(ui_theme.BG_ELEVATED), bd=0, highlightthickness=0)
+            icon_label.image = icon_img  # Keep reference
+            icon_label.pack(side=tk.LEFT, padx=(6, 10), pady=0)
+            widgets_to_bind.append(icon_label)
 
         label_widget = tk.Label(
             item_frame, text=item.label, font=("Segoe UI", 10),
             fg=ui_theme.resolve(ui_theme.TEXT_PRIMARY),
             bg=ui_theme.resolve(ui_theme.BG_ELEVATED), anchor="w", bd=0, highlightthickness=0)
         label_widget.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        widgets_to_bind.append(label_widget)
 
-        # Accelerator (shortcut)
+        # Accelerator (shortcut, right side)
         accel_widget = tk.Label(
-            item_frame, text=item.accelerator, font=("Segoe UI", 9),
+            item_frame, text=item.accelerator if item.accelerator else "",
+            font=("Segoe UI", 8),
             fg=ui_theme.resolve(ui_theme.TEXT_SECONDARY),
             bg=ui_theme.resolve(ui_theme.BG_ELEVATED), bd=0, highlightthickness=0)
         if item.accelerator:
-            accel_widget.pack(side=tk.RIGHT, padx=4)
+            accel_widget.pack(side=tk.RIGHT, padx=8, pady=0)
+        widgets_to_bind.append(accel_widget)
 
-        # Hover effect
-        for w in [item_frame, label_widget, accel_widget]:
+        # Hover and click effects
+        for w in widgets_to_bind:
             w.bind("<Enter>", lambda e: on_hover(True))
             w.bind("<Leave>", lambda e: on_hover(False))
             w.bind("<Button-1>", lambda e: on_click())
