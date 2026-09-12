@@ -284,6 +284,13 @@ def _icon_moon(draw, s, w, color):
     draw.arc([cx2 - r2, cy2 - r2, cx2 + r2, cy2 + r2], start=85, end=275, fill=color, width=w)
 
 
+def _icon_power(draw, s, w, color):
+    # Ring broken at the top, with a stem rising through the gap
+    box = [0.20 * s, 0.20 * s, 0.80 * s, 0.80 * s]
+    draw.arc(box, start=300, end=240, fill=color, width=w)
+    _line(draw, s, [(0.50, 0.14), (0.50, 0.46)], w, color)
+
+
 def _icon_footer(draw, s, w, color):
     _line(draw, s, [(0.20, 0.14), (0.80, 0.14), (0.80, 0.86), (0.20, 0.86), (0.20, 0.14)], w, color)
     _line(draw, s, [(0.20, 0.66), (0.80, 0.66)], w, color)
@@ -326,6 +333,7 @@ _RECIPES: Dict[str, Callable] = {
     "document": _icon_document,
     "sun": _icon_sun,
     "moon": _icon_moon,
+    "power": _icon_power,
     "footer": _icon_footer,
 }
 

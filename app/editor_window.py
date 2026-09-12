@@ -82,35 +82,35 @@ class PDFEditorApp:
         self.menubar.grid(row=0, column=0, sticky='ew')
 
         self.menubar.add_menu("file", "File", icon="open", items=[
-            ModernMenuItem("Open PDF...", command=self.open_pdf, accelerator="Ctrl+O"),
-            ModernMenuItem("Import Multiple PDFs...", command=self.import_pdfs),
+            ModernMenuItem("Open PDF...", command=self.open_pdf, accelerator="Ctrl+O", icon="open"),
+            ModernMenuItem("Import Multiple PDFs...", command=self.import_pdfs, icon="import"),
             ModernMenuItem("", is_separator=True),
-            ModernMenuItem("Open Project...", command=self.open_project),
-            ModernMenuItem("Save Project", command=self.save_project, accelerator="Ctrl+S"),
-            ModernMenuItem("Save Project As...", command=self.save_project_as, accelerator="Ctrl+Shift+S"),
+            ModernMenuItem("Open Project...", command=self.open_project, icon="document"),
+            ModernMenuItem("Save Project", command=self.save_project, accelerator="Ctrl+S", icon="save"),
+            ModernMenuItem("Save Project As...", command=self.save_project_as, accelerator="Ctrl+Shift+S", icon="duplicate"),
             ModernMenuItem("", is_separator=True),
             ModernMenuItem("Export PDF...", command=self.export_pdf, accelerator="Ctrl+E", icon="export"),
             ModernMenuItem("Compress PDF...", command=self.open_compress_dialog, icon="compress"),
             ModernMenuItem("", is_separator=True),
-            ModernMenuItem("Close Document", command=self.close_document, accelerator="Ctrl+W"),
-            ModernMenuItem("Exit", command=self.quit_app, accelerator="Ctrl+Q"),
+            ModernMenuItem("Close Document", command=self.close_document, accelerator="Ctrl+W", icon="close"),
+            ModernMenuItem("Exit", command=self.quit_app, accelerator="Ctrl+Q", icon="power"),
         ])
 
         self.menubar.add_menu("edit", "Edit", icon="edit", items=[
             ModernMenuItem("Undo", command=self.undo, accelerator="Ctrl+Z", icon="undo"),
             ModernMenuItem("Redo", command=self.redo, accelerator="Ctrl+Y", icon="redo"),
             ModernMenuItem("", is_separator=True),
-            ModernMenuItem("Copy Image(s)", command=self._copy_images, accelerator="Ctrl+C"),
-            ModernMenuItem("Paste Image(s)", command=self._paste_images, accelerator="Ctrl+V"),
+            ModernMenuItem("Copy Image(s)", command=self._copy_images, accelerator="Ctrl+C", icon="duplicate"),
+            ModernMenuItem("Paste Image(s)", command=self._paste_images, accelerator="Ctrl+V", icon="import"),
             ModernMenuItem("", is_separator=True),
-            ModernMenuItem("Group Images", command=self._group_images, accelerator="Ctrl+G"),
-            ModernMenuItem("Ungroup Images", command=self._ungroup_images, accelerator="Ctrl+Shift+G"),
+            ModernMenuItem("Group Images", command=self._group_images, accelerator="Ctrl+G", icon="collapse"),
+            ModernMenuItem("Ungroup Images", command=self._ungroup_images, accelerator="Ctrl+Shift+G", icon="expand"),
         ])
 
         self.menubar.add_menu("view", "View", icon="zoom_in", items=[
             ModernMenuItem("Zoom In", command=lambda: self.pdf_viewer.zoom_in(), accelerator="Ctrl++", icon="zoom_in"),
             ModernMenuItem("Zoom Out", command=lambda: self.pdf_viewer.zoom_out(), accelerator="Ctrl+-", icon="zoom_out"),
-            ModernMenuItem("Actual Size (100%)", command=lambda: self.pdf_viewer.zoom_100(), accelerator="Ctrl+0"),
+            ModernMenuItem("Actual Size (100%)", command=lambda: self.pdf_viewer.zoom_100(), accelerator="Ctrl+0", icon="document"),
             ModernMenuItem("", is_separator=True),
             ModernMenuItem("Fit Page", command=lambda: self.pdf_viewer.fit_page(), icon="fit_page"),
             ModernMenuItem("Fit Width", command=lambda: self.pdf_viewer.fit_width(), icon="fit_width"),
@@ -128,22 +128,24 @@ class PDFEditorApp:
             ModernMenuItem("Move Page Up", command=lambda: self._menu_move_current(-1), icon="move_up"),
             ModernMenuItem("Move Page Down", command=lambda: self._menu_move_current(1), icon="move_down"),
             ModernMenuItem("", is_separator=True),
-            ModernMenuItem("Insert Page(s) Before...", command=lambda: self._open_insert_pages_dialog(
-                at_page=self.pdf_viewer.current_page) if self.document else None),
-            ModernMenuItem("Insert Page(s) After...", command=lambda: self._open_insert_pages_dialog(
-                at_page=self.pdf_viewer.current_page + 1) if self.document else None),
+            ModernMenuItem("Insert Page(s) Before...", icon="insert_pages",
+                           command=lambda: self._open_insert_pages_dialog(
+                               at_page=self.pdf_viewer.current_page) if self.document else None),
+            ModernMenuItem("Insert Page(s) After...", icon="insert_pages",
+                           command=lambda: self._open_insert_pages_dialog(
+                               at_page=self.pdf_viewer.current_page + 1) if self.document else None),
             ModernMenuItem("", is_separator=True),
             ModernMenuItem("Delete Current Page", command=lambda: self._confirm_and_delete_page(
                 self.pdf_viewer.current_page) if self.document else None, accelerator="Delete", icon="delete"),
         ])
 
         self.menubar.add_menu("tools", "Tools", icon="settings", items=[
-            ModernMenuItem("Simple Footer Tool (Classic)...", command=self.open_classic_tool),
+            ModernMenuItem("Simple Footer Tool (Classic)...", command=self.open_classic_tool, icon="footer"),
         ])
 
         self.menubar.add_menu("help", "Help", icon="more", items=[
-            ModernMenuItem("Keyboard Shortcuts", command=self._show_shortcuts),
-            ModernMenuItem("About PDF Document Studio", command=self._show_about),
+            ModernMenuItem("Keyboard Shortcuts", command=self._show_shortcuts, icon="settings"),
+            ModernMenuItem("About PDF Document Studio", command=self._show_about, icon="document"),
         ])
 
     def _menu_move_current(self, delta: int):
