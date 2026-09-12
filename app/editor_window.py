@@ -26,7 +26,8 @@ from utils.ui_helpers import center_window
 from utils import ui_theme
 from utils.ui_theme import apply_base_theme
 from utils.widgets import create_button, create_icon_button, vertical_separator
-from utils.accordion import AccordionPanel, RAIL_W
+from utils import icons as icon_lib
+from app.inspector_panel import ModernInspectorPanel, RAIL_WIDTH as RAIL_W
 
 from app.tools_panel import ToolsPanel
 from app.file_organizer_panel import FileOrganizerPanel
@@ -178,74 +179,146 @@ class PDFEditorApp:
         toolbar.grid(row=0, column=0, sticky='ew')
         toolbar.grid_propagate(False)
 
-        # No app name here -- the OS title bar already says it, and
-        # repeating it just spends toolbar width on something the user
-        # can't act on. The document name lives in the status bar.
-        def group(pad_left: int = 0):
+        def group(side=tk.LEFT, padx=(0, 0)):
             f = ctk.CTkFrame(toolbar, fg_color="transparent")
-            f.pack(side=tk.LEFT, padx=(pad_left, 0))
+            f.pack(side=side, padx=padx, fill=tk.Y)
             return f
 
-        # ---- File actions: visual hierarchy -- Export is the one
-        # standout primary action, Open/Save are secondary. ------------
-        file_group = group(pad_left=ui_theme.SPACE_12)
+        # ---- Left Group: File actions ----
+        left_group = group(side=tk.LEFT, padx=(ui_theme.SPACE_12, 0))
+
         self.open_button = create_button(
-            file_group, text="Open PDF", icon="open", command=self.open_pdf,
+            left_group, text="Open PDF", icon="open", command=self.open_pdf,
             variant="secondary", height=32, tooltip="Open a PDF file (Ctrl+O)")
-        self.open_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.open_button.pack(side=tk.LEFT, padx=(0, 6), pady=8)
 
         save_btn = create_button(
-            file_group, text="Save Project", icon="save", command=self.save_project,
+            left_group, text="Save", icon="save", command=self.save_project,
             variant="secondary", height=32, tooltip="Save project (Ctrl+S)")
-        save_btn.pack(side=tk.LEFT, padx=(0, 6))
+        save_btn.pack(side=tk.LEFT, padx=(0, 6), pady=8)
         self._doc_buttons.append(save_btn)
 
         export_btn = create_button(
-            file_group, text="Export PDF", icon="export", command=self.export_pdf,
+            left_group, text="Export PDF", icon="export", command=self.export_pdf,
             variant="primary", height=32, tooltip="Export the finished PDF (Ctrl+E)")
-        export_btn.pack(side=tk.LEFT)
+        export_btn.pack(side=tk.LEFT, pady=8)
         self._doc_buttons.append(export_btn)
 
-        vertical_separator(toolbar, height=24)
+        vertical_separator(toolbar, height=22, pad=ui_theme.SPACE_12)
 
-        # ---- Editing: compact icon-only utility actions. --------------
-        edit_group = group()
-        undo_btn = create_icon_button(edit_group, "undo", command=self.undo,
-                                       tooltip="Undo (Ctrl+Z)", height=32, width=32)
-        undo_btn.pack(side=tk.LEFT, padx=(0, 2))
-        self._doc_buttons.append(undo_btn)
+        # ---- Center Group: Document navigation & Zoom ----
+        center_group = group(side=tk.LEFT, padx=(0, 0))
 
-        redo_btn = create_icon_button(edit_group, "redo", command=self.redo,
-                                       tooltip="Redo (Ctrl+Y)", height=32, width=32)
-        redo_btn.pack(side=tk.LEFT)
-        self._doc_buttons.append(redo_btn)
+        prev_btn = create_icon_button(
+            center_group, "chevron_left", command=lambda: self.pdf_viewer.prev_page(),
+            tooltip="Previous page (Page Up)", size=13, width=28, height=30)
+        prev_btn.pack(side=tk.LEFT, padx=(0, 4), pady=9)
+        self._doc_buttons.append(prev_btn)
 
-        vertical_separator(toolbar, height=24)
+        self.top_page_label = ctk.CTkLabel(
+            center_group, text="No pages", font=ui_theme.font(11, "bold"),
+            text_color=ui_theme.TEXT_PRIMARY, width=80)
+        self.top_page_label.pack(side=tk.LEFT, padx=4, pady=9)
 
-        # ---- Insert: secondary action. ---------------------------------
-        insert_group = group()
-        add_image_btn = create_button(
-            insert_group, text="Add Image", icon="add_image", command=self.add_image,
-            variant="secondary", height=32, tooltip="Place an image or stamp on the current page")
-        add_image_btn.pack(side=tk.LEFT)
-        self._doc_buttons.append(add_image_btn)
+        next_btn = create_icon_button(
+            center_group, "chevron_right", command=lambda: self.pdf_viewer.next_page(),
+            tooltip="Next page (Page Down)", size=13, width=28, height=30)
+        next_btn.pack(side=tk.LEFT, padx=(4, 0), pady=9)
+        self._doc_buttons.append(next_btn)
 
-        # ---- View: panel toggles, right-aligned. Kept apart from the
-        # document actions on the left -- these change the workspace, not
-        # the document. ---------------------------------------------------
+        vertical_separator(center_group, height=20, pad=ui_theme.SPACE_8)
+
+        zoom_out_btn = create_icon_button(
+            center_group, "zoom_out", command=lambda: self.pdf_viewer.zoom_out(),
+            tooltip="Zoom out (Ctrl+-)", size=13, width=28, height=30)
+        zoom_out_btn.pack(side=tk.LEFT, padx=(0, 4), pady=9)
+        self._doc_buttons.append(zoom_out_btn)
+
+        self.top_zoom_label = ctk.CTkLabel(
+            center_group, text="100%", width=46, font=ui_theme.font(11),
+            text_color=ui_theme.TEXT_PRIMARY)
+        self.top_zoom_label.pack(side=tk.LEFT, padx=4, pady=9)
+
+        zoom_in_btn = create_icon_button(
+            center_group, "zoom_in", command=lambda: self.pdf_viewer.zoom_in(),
+            tooltip="Zoom in (Ctrl++)", size=13, width=28, height=30)
+        zoom_in_btn.pack(side=tk.LEFT, padx=(4, 6), pady=9)
+        self._doc_buttons.append(zoom_in_btn)
+
+        fit_page_btn = create_button(
+            center_group, text="Fit Page", icon="fit_page",
+            command=lambda: self.pdf_viewer.fit_page(),
+            variant="ghost", height=30, icon_size=13, tooltip="Fit whole page in view")
+        fit_page_btn.pack(side=tk.LEFT, padx=2, pady=9)
+        self._doc_buttons.append(fit_page_btn)
+
+        fit_width_btn = create_button(
+            center_group, text="Fit Width", icon="fit_width",
+            command=lambda: self.pdf_viewer.fit_width(),
+            variant="ghost", height=30, icon_size=13, tooltip="Fit page width to view")
+        fit_width_btn.pack(side=tk.LEFT, padx=2, pady=9)
+        self._doc_buttons.append(fit_width_btn)
+
+        # ---- Right Group: Edit actions, Add image, Theme, Sidebar toggles ----
+        right_group = group(side=tk.RIGHT, padx=(0, ui_theme.SPACE_12))
+
         self.right_panel_button = create_icon_button(
-            toolbar, "panel_right", command=self.toggle_side_panel,
+            right_group, "panel_right", command=self.toggle_side_panel,
             tooltip="Hide properties panel", height=32, width=32, variant="tertiary")
-        self.right_panel_button.pack(side=tk.RIGHT, padx=(0, ui_theme.SPACE_12))
+        self.right_panel_button.pack(side=tk.RIGHT, padx=(2, 0), pady=8)
 
         self.left_panel_button = create_icon_button(
-            toolbar, "panel_left", command=self.toggle_pages_panel,
+            right_group, "panel_left", command=self.toggle_pages_panel,
             tooltip="Hide pages panel", height=32, width=32, variant="tertiary")
-        self.left_panel_button.pack(side=tk.RIGHT, padx=(0, 2))
+        self.left_panel_button.pack(side=tk.RIGHT, padx=(2, 2), pady=8)
+
+        # Theme toggle button
+        curr_mode = ctk.get_appearance_mode()
+        theme_icon = "sun" if curr_mode == "Dark" else "moon"
+        self.theme_btn = create_icon_button(
+            right_group, theme_icon, command=self._toggle_theme,
+            tooltip="Toggle Light / Dark theme", height=32, width=32, variant="tertiary")
+        self.theme_btn.pack(side=tk.RIGHT, padx=(6, 2), pady=8)
+
+        vertical_separator(right_group, height=20, pad=ui_theme.SPACE_8)
+
+        add_image_btn = create_button(
+            right_group, text="Add Image", icon="add_image", command=self.add_image,
+            variant="secondary", height=32, tooltip="Place an image or stamp on the current page")
+        add_image_btn.pack(side=tk.RIGHT, padx=(4, 6), pady=8)
+        self._doc_buttons.append(add_image_btn)
+
+        vertical_separator(right_group, height=20, pad=ui_theme.SPACE_8)
+
+        redo_btn = create_icon_button(
+            right_group, "redo", command=self.redo,
+            tooltip="Redo (Ctrl+Y)", height=32, width=32)
+        redo_btn.pack(side=tk.RIGHT, padx=(2, 2), pady=8)
+        self._doc_buttons.append(redo_btn)
+
+        undo_btn = create_icon_button(
+            right_group, "undo", command=self.undo,
+            tooltip="Undo (Ctrl+Z)", height=32, width=32)
+        undo_btn.pack(side=tk.RIGHT, padx=(0, 2), pady=8)
+        self._doc_buttons.append(undo_btn)
+
+    def _toggle_theme(self):
+        new_mode = ui_theme.toggle_appearance_mode()
+        icon_name = "sun" if new_mode == "Dark" else "moon"
+        self.theme_btn.configure(image=icon_lib.get(icon_name, size=15, color=ui_theme.TEXT_SECONDARY))
+
+    def _on_viewer_page_info_changed(self, current: int, total: int):
+        if hasattr(self, 'top_page_label'):
+            if total > 0:
+                self.top_page_label.configure(text=f"{current} / {total}")
+            else:
+                self.top_page_label.configure(text="No pages")
+
+    def _on_viewer_zoom_info_changed(self, text: str):
+        if hasattr(self, 'top_zoom_label'):
+            self.top_zoom_label.configure(text=text)
 
     def _build_layout(self):
-        # grid, not pack: pack's cavity-sharing with an expanding
-        # PanedWindow squeezed the status/progress bars to ~1px.
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
@@ -256,32 +329,28 @@ class PDFEditorApp:
         content.grid(row=1, column=0, sticky='nsew')
 
         self.pdf_viewer = PDFViewerWidget(
-            content, on_page_changed=self._on_page_changed, on_after_render=self._on_after_render,
+            content,
+            show_toolbar=False,
+            on_page_changed=self._on_page_changed,
+            on_after_render=self._on_after_render,
             on_page_action=self._on_page_action,
             on_page_reorder=self._execute_move_page,
             on_open_requested=self.open_pdf,
+            on_page_info_changed=self._on_viewer_page_info_changed,
+            on_zoom_info_changed=self._on_viewer_zoom_info_changed,
         )
         content.add(self.pdf_viewer, stretch="always", width=850)
 
         self.footer_preview = FooterPreviewController(self.pdf_viewer)
 
-        side_panel = tk.Frame(content, bg=ui_theme.resolve(ui_theme.BG_APP))
+        side_panel = tk.Frame(content, bg=ui_theme.resolve(ui_theme.BG_PANEL))
         content.add(side_panel, width=340)
 
-        self.side_panels = AccordionPanel(
+        self.side_panels = ModernInspectorPanel(
             side_panel, on_collapsed_change=self._on_side_collapsed_change)
         self.side_panels.pack(fill=tk.BOTH, expand=True)
 
-        body = self.side_panels.add("files", "File Organizer", expanded=False)
-        self.file_organizer = FileOrganizerPanel(
-            body,
-            on_reorder=self._reorder_file,
-            on_remove=self._confirm_and_remove_file,
-            on_file_selected=self._on_file_selected,
-        )
-        self.file_organizer.pack(fill=tk.BOTH, expand=True)
-
-        body = self.side_panels.add("footer", "Quick Footer", expanded=True)
+        body = self.side_panels.add("footer", "Quick Footer", icon="footer", expanded=True)
         self.quick_footer_panel = QuickFooterPanel(
             body, undo_manager=self.undo_manager,
             on_preview_changed=self._on_footer_preview_changed,
@@ -294,7 +363,16 @@ class PDFEditorApp:
             lambda: self.pdf_viewer.thumbnail_panel.get_selected_pages())
         self.quick_footer_panel.pack(fill=tk.BOTH, expand=True)
 
-        body = self.side_panels.add("tools", "Tools", expanded=False)
+        body = self.side_panels.add("files", "File Organizer", icon="document", expanded=False)
+        self.file_organizer = FileOrganizerPanel(
+            body,
+            on_reorder=self._reorder_file,
+            on_remove=self._confirm_and_remove_file,
+            on_file_selected=self._on_file_selected,
+        )
+        self.file_organizer.pack(fill=tk.BOTH, expand=True)
+
+        body = self.side_panels.add("tools", "Tools", icon="compress", expanded=False)
         self.tools_panel = ToolsPanel(
             body,
             on_compress=self.compress_pdf,
@@ -309,15 +387,13 @@ class PDFEditorApp:
             on_selection_changed=self._on_image_selection_changed,
         )
 
-        body = self.side_panels.add("image", "Image Properties", expanded=True)
+        body = self.side_panels.add("image", "Image Properties", icon="add_image", expanded=False)
         self.image_properties = ImagePropertiesPanel(
             body, self.undo_manager,
             on_applied=self.image_overlay.redraw,
             on_selection_changed=self.image_overlay.select,
         )
         self.image_properties.pack(fill=tk.BOTH, expand=True)
-        # Only meaningful with something selected, so it stays out of the
-        # stack until there is.
         self.side_panels.set_section_visible("image", False)
 
         # Kept for toggle_side_panel(), which removes/re-adds this pane.
@@ -466,6 +542,10 @@ class PDFEditorApp:
         self.pdf_viewer.clear_document()
         self.quick_footer_panel.load_document(None)
         self.file_organizer.load_document(None)
+        if hasattr(self, 'top_page_label'):
+            self.top_page_label.configure(text="No pages")
+        if hasattr(self, 'top_zoom_label'):
+            self.top_zoom_label.configure(text="100%")
         self._set_document_dependent_state(False)
         self._update_status()
 
@@ -1030,7 +1110,12 @@ class PDFEditorApp:
             return "No document loaded"
         page = self.pdf_viewer.current_page
         total = self.document.page_count
-        zoom = self.pdf_viewer.zoom_label.cget("text")
+        if hasattr(self, 'top_zoom_label'):
+            zoom = self.top_zoom_label.cget("text")
+        elif self.pdf_viewer.zoom_label:
+            zoom = self.pdf_viewer.zoom_label.cget("text")
+        else:
+            zoom = f"{int(self.pdf_viewer.zoom_level * 100)}%"
         modified = " *modified*" if self.document.is_modified() else ""
         name = os.path.basename(self.document.pdf_path)
         return f"{name}{modified}  |  Page {page} of {total}  |  Zoom {zoom}"

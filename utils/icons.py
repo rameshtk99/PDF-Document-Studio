@@ -29,8 +29,8 @@ def _canvas(size: int):
 
 
 def _lw(s: int) -> int:
-    """Stroke width in supersampled px -- ~1.6px once downscaled."""
-    return max(2, round(s * 0.085))
+    """Stroke width in supersampled px -- ~1.8px once downscaled."""
+    return max(2, round(s * 0.092))
 
 
 def _finish(img: Image.Image, size: int) -> Image.Image:
@@ -261,6 +261,35 @@ def _icon_document(draw, s, w, color):
         _line(draw, s, [(0.36, y), (0.64, y)], w, color)
 
 
+def _icon_sun(draw, s, w, color):
+    cx, cy, r = 0.50 * s, 0.50 * s, 0.20 * s
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=w)
+    for angle_pts in [
+        ((0.50, 0.10), (0.50, 0.22)),
+        ((0.50, 0.78), (0.50, 0.90)),
+        ((0.10, 0.50), (0.22, 0.50)),
+        ((0.78, 0.50), (0.90, 0.50)),
+        ((0.22, 0.22), (0.30, 0.30)),
+        ((0.70, 0.70), (0.78, 0.78)),
+        ((0.22, 0.78), (0.30, 0.70)),
+        ((0.70, 0.30), (0.78, 0.22)),
+    ]:
+        _line(draw, s, angle_pts, w, color)
+
+
+def _icon_moon(draw, s, w, color):
+    cx, cy, r = 0.52 * s, 0.50 * s, 0.30 * s
+    draw.arc([cx - r, cy - r, cx + r, cy + r], start=60, end=300, fill=color, width=w)
+    cx2, cy2, r2 = 0.64 * s, 0.50 * s, 0.25 * s
+    draw.arc([cx2 - r2, cy2 - r2, cx2 + r2, cy2 + r2], start=85, end=275, fill=color, width=w)
+
+
+def _icon_footer(draw, s, w, color):
+    _line(draw, s, [(0.20, 0.14), (0.80, 0.14), (0.80, 0.86), (0.20, 0.86), (0.20, 0.14)], w, color)
+    _line(draw, s, [(0.20, 0.66), (0.80, 0.66)], w, color)
+    _line(draw, s, [(0.32, 0.76), (0.68, 0.76)], w, color)
+
+
 _RECIPES: Dict[str, Callable] = {
     "open": _icon_open,
     "save": _icon_save,
@@ -295,6 +324,9 @@ _RECIPES: Dict[str, Callable] = {
     "collapse": _icon_collapse,
     "expand": _icon_expand,
     "document": _icon_document,
+    "sun": _icon_sun,
+    "moon": _icon_moon,
+    "footer": _icon_footer,
 }
 
 

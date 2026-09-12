@@ -18,19 +18,29 @@ from utils import ui_theme, icons as icon_lib, tooltip as tooltip_lib
 
 _VARIANTS = {
     "primary": dict(fg_color=ui_theme.ACCENT, hover_color=ui_theme.ACCENT_HOVER,
-                     text_color="white", icon_color="white"),
+                     text_color="#FFFFFF", icon_color="#FFFFFF",
+                     border_width=0, border_color=None),
     "secondary": dict(fg_color=ui_theme.SECONDARY_BTN, hover_color=ui_theme.SECONDARY_BTN_HOVER,
-                       text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_PRIMARY),
+                       text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_PRIMARY,
+                       border_width=1, border_color=ui_theme.BORDER),
     "ghost": dict(fg_color="transparent", hover_color=ui_theme.GHOST_HOVER,
-                  text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_SECONDARY),
+                  text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_SECONDARY,
+                  border_width=0, border_color=None),
     "tertiary": dict(fg_color="transparent", hover_color=ui_theme.GHOST_HOVER,
-                      text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_SECONDARY),
+                      text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_SECONDARY,
+                      border_width=0, border_color=None),
     "destructive": dict(fg_color=ui_theme.DANGER, hover_color=ui_theme.DANGER_HOVER,
-                         text_color="white", icon_color="white"),
+                         text_color="#FFFFFF", icon_color="#FFFFFF",
+                         border_width=0, border_color=None),
     "danger_ghost": dict(fg_color="transparent", hover_color=ui_theme.DANGER_SOFT,
-                          text_color=ui_theme.DANGER, icon_color=ui_theme.DANGER),
+                          text_color=ui_theme.DANGER, icon_color=ui_theme.DANGER,
+                          border_width=0, border_color=None),
+    "success": dict(fg_color=ui_theme.SUCCESS, hover_color=ui_theme.SUCCESS_HOVER,
+                     text_color="#FFFFFF", icon_color="#FFFFFF",
+                     border_width=0, border_color=None),
     "toolbar": dict(fg_color="transparent", hover_color=ui_theme.GHOST_HOVER,
-                     text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_PRIMARY),
+                     text_color=ui_theme.TEXT_PRIMARY, icon_color=ui_theme.TEXT_PRIMARY,
+                     border_width=0, border_color=None),
 }
 
 
@@ -40,19 +50,33 @@ def create_button(parent, text: str = "", command: Optional[Callable] = None,
                    font_weight: Optional[str] = None, tooltip: Optional[str] = None,
                    **kwargs) -> ctk.CTkButton:
     """A labeled (optionally icon+label) button in a standard variant."""
-    style = _VARIANTS[variant]
-    weight = font_weight or ("bold" if variant in ("primary", "destructive") else "normal")
+    style = _VARIANTS.get(variant, _VARIANTS["secondary"])
+    weight = font_weight or ("bold" if variant in ("primary", "destructive", "success") else "normal")
     image = icon_lib.get(icon, size=icon_size, color=style["icon_color"]) if icon else None
 
-    btn = ctk.CTkButton(
-        parent, text=text, command=command, image=image, compound="left",
-        width=width, height=height, corner_radius=ui_theme.RADIUS_SM,
-        fg_color=style["fg_color"], hover_color=style["hover_color"],
-        text_color=style["text_color"], font=ui_theme.font(12, weight),
+    corner_radius = kwargs.pop("corner_radius", ui_theme.RADIUS_SM)
+    border_width = kwargs.pop("border_width", style.get("border_width", 0))
+    border_color = kwargs.pop("border_color", style.get("border_color", None))
+    if border_color == "transparent" or border_width == 0:
+        border_color = None
+
+    fg_color = kwargs.pop("fg_color", style["fg_color"])
+    hover_color = kwargs.pop("hover_color", style["hover_color"])
+    text_color = kwargs.pop("text_color", style["text_color"])
+
+    btn_kwargs = dict(
+        text=text, command=command, image=image, compound="left",
+        width=width, height=height, corner_radius=corner_radius,
+        fg_color=fg_color, hover_color=hover_color,
+        border_width=border_width,
+        text_color=text_color, font=ui_theme.font(12, weight),
         **kwargs,
     )
+    if border_color is not None:
+        btn_kwargs["border_color"] = border_color
+
+    btn = ctk.CTkButton(parent, **btn_kwargs)
     if tooltip:
-        # Kept so show/hide toggles can retarget the text later.
         btn.tooltip = tooltip_lib.attach(btn, tooltip)
     return btn
 
@@ -61,17 +85,28 @@ def create_icon_button(parent, icon: str, command: Optional[Callable] = None,
                         tooltip: Optional[str] = None, size: int = 16,
                         height: int = 30, width: int = 30,
                         variant: str = "ghost", **kwargs) -> ctk.CTkButton:
-    """Icon-only square button -- every caller MUST pass `tooltip` (icon-
-    only controls are otherwise unlabeled)."""
-    style = _VARIANTS[variant]
+    """Icon-only button with modern hover and tooltip."""
+    style = _VARIANTS.get(variant, _VARIANTS["ghost"])
     image = icon_lib.get(icon, size=size, color=style["icon_color"])
-    btn = ctk.CTkButton(
-        parent, text="", image=image, command=command, width=width, height=height,
-        corner_radius=ui_theme.RADIUS_SM, fg_color=style["fg_color"],
-        hover_color=style["hover_color"], **kwargs,
+    corner_radius = kwargs.pop("corner_radius", ui_theme.RADIUS_SM)
+    border_width = kwargs.pop("border_width", style.get("border_width", 0))
+    border_color = kwargs.pop("border_color", style.get("border_color", None))
+    if border_color == "transparent" or border_width == 0:
+        border_color = None
+
+    fg_color = kwargs.pop("fg_color", style["fg_color"])
+    hover_color = kwargs.pop("hover_color", style["hover_color"])
+
+    btn_kwargs = dict(
+        text="", image=image, command=command, width=width, height=height,
+        corner_radius=corner_radius, fg_color=fg_color,
+        hover_color=hover_color, border_width=border_width, **kwargs,
     )
+    if border_color is not None:
+        btn_kwargs["border_color"] = border_color
+
+    btn = ctk.CTkButton(parent, **btn_kwargs)
     if tooltip:
-        # Kept so show/hide toggles can retarget the text later.
         btn.tooltip = tooltip_lib.attach(btn, tooltip)
     return btn
 

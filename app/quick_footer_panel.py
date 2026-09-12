@@ -25,7 +25,7 @@ from utils.constants import (
     QUICK_FOOTER_DRAFTS_DIR, QUICK_FOOTER_DRAFTS_FILE,
 )
 from utils.ui_theme import (
-    ACCENT, ACCENT_HOVER, BG_SUBTLE, BG_SURFACE, BORDER, RADIUS, RADIUS_SM,
+    ACCENT, ACCENT_HOVER, BG_HOVER, BG_SUBTLE, BG_SURFACE, BORDER, RADIUS, RADIUS_SM,
     SECONDARY_BTN, SECONDARY_BTN_HOVER, SPACE_4, SPACE_8,
     SUCCESS, TEXT_PRIMARY, TEXT_SECONDARY, font,
 )
@@ -143,15 +143,16 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
         # ---- actions -- one row, not three stacked full-width buttons ----------
         actions_row = ctk.CTkFrame(self, fg_color="transparent")
         actions_row.pack(fill="x", pady=(SPACE_4, 0))
-        self.apply_button = ctk.CTkButton(
-            actions_row, text="Apply", command=self._apply_to_all, height=30,
-            corner_radius=RADIUS_SM, fg_color=SUCCESS, hover_color="#0F7A2E", font=font(11, "bold"))
+        self.apply_button = create_button(
+            actions_row, text="Apply Footer", icon="check", command=self._apply_to_all,
+            variant="success", height=32, font_weight="bold"
+        )
         self.apply_button.pack(side="left", fill="x", expand=True, padx=(0, 4))
         create_button(actions_row, text="Export", icon="export", command=self._request_export,
-                      variant="primary", height=30, font_weight="bold"
+                      variant="primary", height=32, font_weight="bold"
                       ).pack(side="left", fill="x", expand=True, padx=(0, 4))
         create_button(actions_row, text="Compress", icon="compress", command=self._request_compress,
-                      variant="secondary", height=30).pack(side="left", fill="x", expand=True)
+                      variant="secondary", height=32).pack(side="left", fill="x", expand=True)
 
         self._set_columns()
 
@@ -162,13 +163,14 @@ class QuickFooterPanel(ctk.CTkScrollableFrame):
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", pady=(SPACE_8, 0))
 
-        ctk.CTkLabel(row, text="Apply to", font=font(11), text_color=TEXT_SECONDARY
-                     ).pack(side="left", padx=(0, 6))
-        self.scope_menu = ctk.CTkOptionMenu(
+        ctk.CTkLabel(row, text="Apply to:", font=font(11, "bold"), text_color=TEXT_SECONDARY
+                     ).pack(side="left", padx=(0, 8))
+        self.scope_menu = ctk.CTkSegmentedButton(
             row, variable=self.scope_var, values=_SCOPES, command=self._on_scope_changed,
-            fg_color=BG_SUBTLE, button_color=SECONDARY_BTN,
-            button_hover_color=SECONDARY_BTN_HOVER, text_color=TEXT_PRIMARY,
-            dropdown_fg_color=BG_SURFACE, font=font(11), height=26, width=1)
+            font=font(10), height=26,
+            selected_color=ACCENT, selected_hover_color=ACCENT_HOVER,
+            unselected_color=BG_SUBTLE, unselected_hover_color=BG_HOVER,
+            text_color=TEXT_PRIMARY)
         self.scope_menu.pack(side="left", fill="x", expand=True)
 
         # Only meaningful for the range scope -- packed/unpacked rather

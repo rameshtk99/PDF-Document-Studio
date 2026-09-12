@@ -680,17 +680,19 @@ class ThumbnailPanel(tk.Frame):
         for page_num in self.thumbnail_buttons:
             self._update_single_highlight(page_num)
 
+    def on_theme_changed(self):
+        """Update thumbnail panel elements on appearance mode switch."""
+        try:
+            sidebar_bg = ui_theme.resolve(ui_theme.BG_SIDEBAR)
+            self.config(bg=sidebar_bg)
+            self.canvas.config(bg=sidebar_bg)
+            self.thumbnails_frame.config(bg=sidebar_bg)
+            self._update_thumbnail_highlights()
+        except Exception:
+            pass
+
     def _update_single_highlight(self, page_num: int):
-        """Restrained card styling for one thumbnail: the card's own
-        background never changes to a heavy tinted fill -- selection is
-        expressed with a thin accent border, a small 3px accent stripe on
-        the leading edge, and the caption's text color/weight, the same
-        vocabulary a properties inspector uses for a selected row. A
-        multi-selected-but-not-current page gets the same treatment in
-        the warning color instead of accent, so it stays visually
-        distinct from "this is the current page". Hover only nudges the
-        card to the next step up the surface ladder (BG_ELEVATED).
-        """
+        """Card styling for one thumbnail with modern accent border and soft tint."""
         btn = self.thumbnail_buttons.get(page_num)
         frame = self.thumbnail_frames.get(page_num)
         label = self.thumbnail_labels.get(page_num)
@@ -702,26 +704,26 @@ class ThumbnailPanel(tk.Frame):
         base_bg = ui_theme.resolve(ui_theme.BG_SURFACE)
 
         if page_num == self.current_page:
-            bg = base_bg
+            bg = ui_theme.resolve(ui_theme.ACCENT_SOFT)
             border = ui_theme.ACCENT
             stripe = ui_theme.ACCENT
             label_color = ui_theme.ACCENT
             label_weight = "bold"
         elif page_num in self.selected_pages:
-            bg = base_bg
+            bg = ui_theme.resolve(ui_theme.MULTI_SELECT_SOFT)
             border = ui_theme.resolve(ui_theme.MULTI_SELECT_BORDER)
             stripe = border
             label_color = ui_theme.resolve(ui_theme.MULTI_SELECT_BORDER)
             label_weight = "normal"
         elif page_num == self._hovered_page:
-            bg = ui_theme.resolve(ui_theme.BG_ELEVATED)
-            border = bg
+            bg = ui_theme.resolve(ui_theme.BG_HOVER)
+            border = ui_theme.resolve(ui_theme.BORDER_STRONG)
             stripe = bg
-            label_color = ui_theme.resolve(ui_theme.TEXT_SECONDARY)
+            label_color = ui_theme.resolve(ui_theme.TEXT_PRIMARY)
             label_weight = "normal"
         else:
             bg = base_bg
-            border = base_bg
+            border = ui_theme.resolve(ui_theme.BORDER)
             stripe = base_bg
             label_color = ui_theme.resolve(ui_theme.TEXT_SECONDARY)
             label_weight = "normal"
@@ -855,13 +857,20 @@ class PDFViewerWidget(tk.Frame):
                  on_after_render: Optional[Callable] = None,
                  on_page_action: Optional[Callable[[str, int], None]] = None,
                  on_page_reorder: Optional[Callable[[int, int], None]] = None,
-                 on_open_requested: Optional[Callable] = None, **kwargs):
+                 on_open_requested: Optional[Callable] = None,
+                 show_toolbar: bool = True,
+                 on_page_info_changed: Optional[Callable[[int, int], None]] = None,
+                 on_zoom_info_changed: Optional[Callable[[str], None]] = None,
+                 **kwargs):
         """
         Args:
             on_page_changed: callback(page_num) when the current page changes
             on_after_render: callback() after a redraw, for overlays
             on_page_action / on_page_reorder: forwarded to ThumbnailPanel
             on_open_requested: callback() for the empty-state Open button
+            show_toolbar: whether to show internal toolbar (False when unified top bar is used)
+            on_page_info_changed: callback(current_page, total_pages) for external top bar
+            on_zoom_info_changed: callback(zoom_text) for external top bar
         """
         super().__init__(parent, **kwargs)
 
@@ -872,6 +881,9 @@ class PDFViewerWidget(tk.Frame):
         self.on_page_action = on_page_action
         self.on_page_reorder = on_page_reorder
         self.on_open_requested = on_open_requested
+        self.show_toolbar = show_toolbar
+        self.on_page_info_changed = on_page_info_changed
+        self.on_zoom_info_changed = on_zoom_info_changed
         self._empty_state_window = None
         self._empty_state_frame = None
 
@@ -894,50 +906,67 @@ class PDFViewerWidget(tk.Frame):
             print("Warning: No PDF rendering backend available")
         
         self._init_ui()
+        ui_theme.add_theme_listener(self.on_theme_changed)
     
+    def on_theme_changed(self):
+        """Handle real-time appearance mode change."""
+        try:
+            canvas_bg = ui_theme.resolve(ui_theme.BG_CANVAS)
+            self.canvas.config(bg=canvas_bg)
+            if hasattr(self, 'thumbnail_panel'):
+                self.thumbnail_panel.on_theme_changed()
+            if self.document:
+                self._rebuild_layout_and_render(self.current_page)
+        except Exception:
+            pass
+
     def _init_ui(self):
         """Initialize the UI"""
-        # Toolbar -- unobtrusive document controls docked above the
-        # workspace: page navigation on the left, zoom/fit on the right.
-        toolbar = ctk.CTkFrame(self, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=38)
-        toolbar.pack(side=tk.TOP, fill=tk.X)
-        toolbar.pack_propagate(False)
+        self.page_label = None
+        self.zoom_label = None
 
-        nav_group = ctk.CTkFrame(toolbar, fg_color="transparent")
-        nav_group.pack(side=tk.LEFT, padx=(ui_theme.SPACE_8, 0))
-        create_icon_button(nav_group, "chevron_left", command=self.prev_page,
-                            tooltip="Previous page (Page Up)", size=13, width=28, height=28
-                            ).pack(side=tk.LEFT, padx=(0, 4))
-        self.page_label = ctk.CTkLabel(nav_group, text="Page 1 of 1", font=ui_theme.font(12),
-                                        text_color=ui_theme.TEXT_PRIMARY)
-        self.page_label.pack(side=tk.LEFT, padx=4)
-        create_icon_button(nav_group, "chevron_right", command=self.next_page,
-                            tooltip="Next page (Page Down)", size=13, width=28, height=28
-                            ).pack(side=tk.LEFT, padx=(4, 0))
+        if self.show_toolbar:
+            # Toolbar -- unobtrusive document controls docked above the
+            # workspace: page navigation on the left, zoom/fit on the right.
+            toolbar = ctk.CTkFrame(self, fg_color=ui_theme.BG_SURFACE, corner_radius=0, height=38)
+            toolbar.pack(side=tk.TOP, fill=tk.X)
+            toolbar.pack_propagate(False)
 
-        vertical_separator(toolbar, height=20)
+            nav_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+            nav_group.pack(side=tk.LEFT, padx=(ui_theme.SPACE_8, 0))
+            create_icon_button(nav_group, "chevron_left", command=self.prev_page,
+                                tooltip="Previous page (Page Up)", size=13, width=28, height=28
+                                ).pack(side=tk.LEFT, padx=(0, 4))
+            self.page_label = ctk.CTkLabel(nav_group, text="Page 1 of 1", font=ui_theme.font(12),
+                                            text_color=ui_theme.TEXT_PRIMARY)
+            self.page_label.pack(side=tk.LEFT, padx=4)
+            create_icon_button(nav_group, "chevron_right", command=self.next_page,
+                                tooltip="Next page (Page Down)", size=13, width=28, height=28
+                                ).pack(side=tk.LEFT, padx=(4, 0))
 
-        zoom_group = ctk.CTkFrame(toolbar, fg_color="transparent")
-        zoom_group.pack(side=tk.LEFT)
-        create_icon_button(zoom_group, "zoom_out", command=self.zoom_out,
-                            tooltip="Zoom out (Ctrl+-)", size=13, width=28, height=28
-                            ).pack(side=tk.LEFT, padx=(0, 4))
-        self.zoom_label = ctk.CTkLabel(zoom_group, text="100%", width=44, font=ui_theme.font(12),
-                                        text_color=ui_theme.TEXT_PRIMARY)
-        self.zoom_label.pack(side=tk.LEFT, padx=4)
-        create_icon_button(zoom_group, "zoom_in", command=self.zoom_in,
-                            tooltip="Zoom in (Ctrl++)", size=13, width=28, height=28
-                            ).pack(side=tk.LEFT, padx=(4, 8))
+            vertical_separator(toolbar, height=20)
 
-        create_button(zoom_group, text="Fit Page", icon="fit_page", command=self.fit_page,
-                      variant="ghost", height=28, icon_size=13,
-                      tooltip="Fit whole page in view").pack(side=tk.LEFT, padx=2)
-        create_button(zoom_group, text="Fit Width", icon="fit_width", command=self.fit_width,
-                      variant="ghost", height=28, icon_size=13,
-                      tooltip="Fit page width to view").pack(side=tk.LEFT, padx=2)
-        create_button(zoom_group, text="100%", command=self.zoom_100,
-                      variant="ghost", height=28, tooltip="Actual size (Ctrl+0)"
-                      ).pack(side=tk.LEFT, padx=2)
+            zoom_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+            zoom_group.pack(side=tk.LEFT)
+            create_icon_button(zoom_group, "zoom_out", command=self.zoom_out,
+                                tooltip="Zoom out (Ctrl+-)", size=13, width=28, height=28
+                                ).pack(side=tk.LEFT, padx=(0, 4))
+            self.zoom_label = ctk.CTkLabel(zoom_group, text="100%", width=44, font=ui_theme.font(12),
+                                            text_color=ui_theme.TEXT_PRIMARY)
+            self.zoom_label.pack(side=tk.LEFT, padx=4)
+            create_icon_button(zoom_group, "zoom_in", command=self.zoom_in,
+                                tooltip="Zoom in (Ctrl++)", size=13, width=28, height=28
+                                ).pack(side=tk.LEFT, padx=(4, 8))
+
+            create_button(zoom_group, text="Fit Page", icon="fit_page", command=self.fit_page,
+                          variant="ghost", height=28, icon_size=13,
+                          tooltip="Fit whole page in view").pack(side=tk.LEFT, padx=2)
+            create_button(zoom_group, text="Fit Width", icon="fit_width", command=self.fit_width,
+                          variant="ghost", height=28, icon_size=13,
+                          tooltip="Fit page width to view").pack(side=tk.LEFT, padx=2)
+            create_button(zoom_group, text="100%", command=self.zoom_100,
+                          variant="ghost", height=28, tooltip="Actual size (Ctrl+0)"
+                          ).pack(side=tk.LEFT, padx=2)
 
         # Main content area: [Thumbnails] | [Canvas + Scrollbar]
         content_area = tk.Frame(self)
@@ -1045,7 +1074,7 @@ class PDFViewerWidget(tk.Frame):
         if not self.document or self.document.page_count == 0:
             self.canvas.delete("all")
             self._show_empty_state()
-            self.page_label.configure(text="No pages")
+            self._update_page_label()
             self._full_layout = {}
             self._page_order = []
             self._sorted_y_tops = []
@@ -1102,8 +1131,19 @@ class PDFViewerWidget(tk.Frame):
             self._empty_state_frame = None
 
     def _update_page_label(self):
-        if self.document:
-            self.page_label.configure(text=f"Page {self.current_page} of {self.document.page_count}")
+        curr = self.current_page if self.document else 0
+        total = self.document.page_count if self.document else 0
+        text = f"Page {curr} of {total}" if self.document else "No pages"
+        if self.page_label:
+            self.page_label.configure(text=text)
+        if self.on_page_info_changed:
+            self.on_page_info_changed(curr, total)
+
+    def _update_zoom_display(self, text: str):
+        if self.zoom_label:
+            self.zoom_label.configure(text=text)
+        if self.on_zoom_info_changed:
+            self.on_zoom_info_changed(text)
 
     def _page_pixel_size(self, page_num: int, zoom_factor: float) -> Tuple[int, int]:
         """Estimate a page's rendered pixel size from its PDF-point
@@ -1439,33 +1479,33 @@ class PDFViewerWidget(tk.Frame):
         """Zoom in"""
         self.zoom_mode = "custom"
         self.zoom_level = min(self.zoom_level * 1.2, 4.0)
-        self.zoom_label.configure(text=f"{int(self.zoom_level * 100)}%")
+        self._update_zoom_display(f"{int(self.zoom_level * 100)}%")
         self._rebuild_layout_and_render(self.current_page)
 
     def zoom_out(self):
         """Zoom out"""
         self.zoom_mode = "custom"
         self.zoom_level = max(self.zoom_level / 1.2, 0.25)
-        self.zoom_label.configure(text=f"{int(self.zoom_level * 100)}%")
+        self._update_zoom_display(f"{int(self.zoom_level * 100)}%")
         self._rebuild_layout_and_render(self.current_page)
 
     def fit_page(self):
         """Fit entire page in canvas"""
         self.zoom_mode = "fit_page"
-        self.zoom_label.configure(text="Fit")
+        self._update_zoom_display("Fit")
         self._rebuild_layout_and_render(self.current_page)
 
     def fit_width(self):
         """Fit page width to canvas"""
         self.zoom_mode = "fit_width"
-        self.zoom_label.configure(text="Width")
+        self._update_zoom_display("Width")
         self._rebuild_layout_and_render(self.current_page)
 
     def zoom_100(self):
         """Zoom to 100%"""
         self.zoom_mode = "100"
         self.zoom_level = 1.0
-        self.zoom_label.configure(text="100%")
+        self._update_zoom_display("100%")
         self._rebuild_layout_and_render(self.current_page)
 
     # ---- pages panel visibility ------------------------------------------
