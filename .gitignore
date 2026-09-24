@@ -1,44 +1,17 @@
-# Everything except the actual application code is ignored by default.
-# Tracked: app/, batch/, models/, pdf/, utils/, viewer/, tests/*.py,
-# main.py, requirements.txt, logo.ico, README.md, setup/install scripts.
-
-# Ignore everything first, then re-allow the source/code paths below.
-*
-
-# ---- keep: main application code ----
-!app/
-!app/**
-!batch/
-!batch/**
-!models/
-!models/**
-!pdf/
-!pdf/**
-!utils/
-!utils/**
-!viewer/
-!viewer/**
-!main.py
-!requirements.txt
-
-# ---- keep: test code (scripts only -- generated/fixture files below stay ignored) ----
-!tests/
-!tests/**/*.py
-
-# ---- keep: essentials to run/build ----
-!logo.ico
-!README.md
-!setup.sh
-!install_deps.sh
-!.gitignore
-
-# ---- always re-ignore these, even inside kept folders ----
-__pycache__/
-*.py[cod]
-*.pyo
+# Python virtual environment (legacy, self-ignores via its own .gitignore too)
 .venv/
-venv/
-env/
-*.pdf
-*.pdfeditor
-*.log
+
+# .NET build output
+bin/
+obj/
+out/
+
+# Backup snapshots and working docs, not part of version control
+backup_2026-09-24/
+docs/
+
+# Editor/OS cruft
+.vs/
+*.user
+*.suo
+Thumbs.db

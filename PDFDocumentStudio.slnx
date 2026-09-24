@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PDFDocumentStudio.App/PDFDocumentStudio.App.csproj" />
+    <Project Path="src/PDFDocumentStudio.Core/PDFDocumentStudio.Core.csproj" />
+    <Project Path="src/PDFDocumentStudio.Features/PDFDocumentStudio.Features.csproj" />
+    <Project Path="src/PDFDocumentStudio.Pdf/PDFDocumentStudio.Pdf.csproj" />
+    <Project Path="src/PDFDocumentStudio.Rendering/PDFDocumentStudio.Rendering.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PDFDocumentStudio.Tests/PDFDocumentStudio.Tests.csproj" />
+  </Folder>
+</Solution>
