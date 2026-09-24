@@ -1,0 +1,70 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PDFDocumentStudio.App.Views.CompressDialogWindow"
+        Title="Compress PDF"
+        Width="360" SizeToContent="Height" CanResize="False"
+        Background="{StaticResource AppBackgroundBrush}"
+        Foreground="{StaticResource TextPrimaryBrush}"
+        WindowStartupLocation="CenterOwner">
+
+    <Window.Styles>
+        <Style Selector="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Padding" Value="6,4" />
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="NumericUpDown">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.PrimaryBtn">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="14,8" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.SecondaryBtn">
+            <Setter Property="Background" Value="{StaticResource ChipBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="14,8" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+    </Window.Styles>
+
+    <StackPanel Margin="20" Spacing="12">
+        <TextBlock Text="Target maximum size" FontWeight="SemiBold" />
+        <TextBlock Text="This is an upper limit, not a target — a file already under it is left alone."
+                   FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" TextWrapping="Wrap" />
+
+        <StackPanel x:Name="SizePresetsPanel" Spacing="4">
+            <RadioButton x:Name="Size5" GroupName="Size" Content="5 MB" />
+            <RadioButton x:Name="Size10" GroupName="Size" Content="10 MB" IsChecked="True" />
+            <RadioButton x:Name="Size15" GroupName="Size" Content="15 MB" />
+            <RadioButton x:Name="Size20" GroupName="Size" Content="20 MB" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <RadioButton x:Name="SizeCustom" GroupName="Size" Content="Custom:" VerticalAlignment="Center" />
+                <NumericUpDown x:Name="CustomSizeBox" Value="10" Minimum="1" Maximum="500" Increment="1" Width="110" />
+                <TextBlock Text="MB" VerticalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}" />
+            </StackPanel>
+        </StackPanel>
+
+        <TextBlock Text="Mode" FontWeight="SemiBold" Margin="0,8,0,0" />
+        <ComboBox x:Name="ModeCombo" SelectedIndex="2" HorizontalAlignment="Stretch">
+            <ComboBoxItem Content="Lossless (structural only, no image recompression)" />
+            <ComboBoxItem Content="Best Quality (gentle image recompression)" />
+            <ComboBoxItem Content="Balanced" />
+            <ComboBoxItem Content="Maximum (smallest possible file)" />
+        </ComboBox>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+            <Button Classes="SecondaryBtn" Content="Cancel" Click="OnCancel" />
+            <Button Classes="PrimaryBtn" Content="Compress" Click="OnCompress" />
+        </StackPanel>
+    </StackPanel>
+</Window>

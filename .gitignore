@@ -5,8 +5,9 @@
 bin/
 obj/
 out/
+publish/
 
-# Backup snapshots and working docs, not part of version control
+# Backup snapshot, not part of version control
 backup_2026-09-24/
 docs/
 

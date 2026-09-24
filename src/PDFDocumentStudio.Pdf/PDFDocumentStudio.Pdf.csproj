@@ -4,10 +4,20 @@
     <ProjectReference Include="..\PDFDocumentStudio.Core\PDFDocumentStudio.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="PDFsharp" Version="6.2.4" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <PackageReference Include="SkiaSharp" Version="4.152.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.152.1" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- PDFtoImage's platform-support attributes already cover every platform this app targets
+         (Windows/Linux/macOS); CA1416 would otherwise ask us to re-declare that on every call site. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
 </Project>

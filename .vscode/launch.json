@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch PDF Document Studio",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/src/PDFDocumentStudio.App/bin/Debug/net10.0/PDFDocumentStudio.App.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/src/PDFDocumentStudio.App",
+            "stopAtEntry": false,
+            "console": "internalConsole"
+        }
+    ]
+}

@@ -5,12 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 
@@ -23,6 +26,15 @@
     <ProjectReference Include="..\..\src\PDFDocumentStudio.Pdf\PDFDocumentStudio.Pdf.csproj" />
     <ProjectReference Include="..\..\src\PDFDocumentStudio.Rendering\PDFDocumentStudio.Rendering.csproj" />
     <ProjectReference Include="..\..\src\PDFDocumentStudio.Features\PDFDocumentStudio.Features.csproj" />
+    <ProjectReference Include="..\..\src\PDFDocumentStudio.App\PDFDocumentStudio.App.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="12.1.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Assets\sample.pdf" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

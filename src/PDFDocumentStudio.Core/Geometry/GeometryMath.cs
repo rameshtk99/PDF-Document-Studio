@@ -70,16 +70,17 @@ public static class GeometryMath
     }
 
     /// <summary>
-    /// Computes a new local rect (relative to the object's un-rotated top-left origin at (0,0)) when the given
-    /// handle is dragged by <paramref name="localDelta"/> (already expressed in the object's local, un-rotated frame).
-    /// The opposite handle stays fixed, matching the legacy drag-resize behavior. Corner handles honor
-    /// <paramref name="lockAspectRatio"/> (Shift-drag) by scaling both axes by the dominant delta.
+    /// Computes a new local rect, relative to the object's OWN un-rotated bottom-left corner at
+    /// (0,0) — same Y-up convention as <see cref="HandlePositions"/> and as <c>PageObject.X/Y</c>
+    /// themselves — when the given handle is dragged by <paramref name="localDelta"/> (already
+    /// expressed in that local, un-rotated frame). The opposite handle stays fixed. Corner handles
+    /// honor <paramref name="lockAspectRatio"/> (Shift-drag) by scaling both axes by the dominant delta.
     /// </summary>
     public static RectD ResizeFromHandle(
         double width, double height, ResizeHandle handle, PointD localDelta,
         double minSize, bool lockAspectRatio)
     {
-        double left = 0, top = 0, right = width, bottom = height;
+        double left = 0, bottom = 0, right = width, top = height;
 
         switch (handle)
         {
@@ -96,7 +97,7 @@ public static class GeometryMath
         if (lockAspectRatio && IsCorner(handle) && width > 0 && height > 0)
         {
             var newW = right - left;
-            var newH = bottom - top;
+            var newH = top - bottom;
             var aspect = width / height;
             // Drive by whichever axis moved more, keep the anchor corner fixed.
             if (Math.Abs(newW - width) >= Math.Abs(newH - height))
@@ -110,10 +111,10 @@ public static class GeometryMath
 
             switch (handle)
             {
-                case ResizeHandle.TopLeft: left = right - newW; top = bottom - newH; break;
-                case ResizeHandle.TopRight: right = left + newW; top = bottom - newH; break;
-                case ResizeHandle.BottomLeft: left = right - newW; bottom = top + newH; break;
-                case ResizeHandle.BottomRight: right = left + newW; bottom = top + newH; break;
+                case ResizeHandle.TopLeft: left = right - newW; top = bottom + newH; break;
+                case ResizeHandle.TopRight: right = left + newW; top = bottom + newH; break;
+                case ResizeHandle.BottomLeft: left = right - newW; bottom = top - newH; break;
+                case ResizeHandle.BottomRight: right = left + newW; bottom = top - newH; break;
             }
         }
 
@@ -122,13 +123,46 @@ public static class GeometryMath
             if (handle is ResizeHandle.Left or ResizeHandle.TopLeft or ResizeHandle.BottomLeft) left = right - minSize;
             else right = left + minSize;
         }
-        if (bottom - top < minSize)
+        if (top - bottom < minSize)
         {
-            if (handle is ResizeHandle.Top or ResizeHandle.TopLeft or ResizeHandle.TopRight) top = bottom - minSize;
-            else bottom = top + minSize;
+            if (handle is ResizeHandle.Bottom or ResizeHandle.BottomLeft or ResizeHandle.BottomRight) bottom = top - minSize;
+            else top = bottom + minSize;
         }
 
-        return RectD.FromLTRB(left, top, right, bottom);
+        return new RectD(left, bottom, right - left, top - bottom);
+    }
+
+    /// <summary>
+    /// Full rotation-aware resize: given an object's current world center/size/rotation, drags
+    /// <paramref name="handle"/> by <paramref name="worldDelta"/> (a world-space, i.e. un-rotated
+    /// PDF-point, pointer delta) and returns the object's new bottom-left X/Y and size. Handles the
+    /// fact that resize happens in the object's own rotated local frame while rotation pivots about
+    /// its center, not its corner.
+    /// </summary>
+    public static (double X, double Y, double Width, double Height) ResizeObjectRect(
+        PointD center, double width, double height, double rotationDegrees,
+        ResizeHandle handle, PointD worldDelta, double minSize, bool lockAspectRatio)
+    {
+        var localDelta = rotationDegrees == 0 ? worldDelta : RotateVector(worldDelta, -rotationDegrees);
+        var newLocalRect = ResizeFromHandle(width, height, handle, localDelta, minSize, lockAspectRatio);
+
+        var oldLocalCenter = new PointD(width / 2.0, height / 2.0);
+        var newLocalCenter = new PointD(newLocalRect.X + newLocalRect.Width / 2.0, newLocalRect.Y + newLocalRect.Height / 2.0);
+        var centerDeltaLocal = newLocalCenter - oldLocalCenter;
+        var centerDeltaWorld = rotationDegrees == 0 ? centerDeltaLocal : RotateVector(centerDeltaLocal, rotationDegrees);
+
+        var newCenter = center + centerDeltaWorld;
+        return (newCenter.X - newLocalRect.Width / 2.0, newCenter.Y - newLocalRect.Height / 2.0, newLocalRect.Width, newLocalRect.Height);
+    }
+
+    /// <summary>Rotates a free vector (not a point relative to a pivot) by the same
+    /// clockwise-as-viewed convention as <see cref="LocalToWorld"/>.</summary>
+    private static PointD RotateVector(PointD v, double rotationDegrees)
+    {
+        var rad = rotationDegrees * Math.PI / 180.0;
+        var cos = Math.Cos(rad);
+        var sin = Math.Sin(rad);
+        return new PointD(v.X * cos + v.Y * sin, -v.X * sin + v.Y * cos);
     }
 
     private static bool IsCorner(ResizeHandle h) =>

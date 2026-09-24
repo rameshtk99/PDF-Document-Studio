@@ -32,9 +32,6 @@ public sealed record TextStyle
     /// <summary>Inset in PDF points applied on all four sides of the text box.</summary>
     public double Padding { get; init; } = 2.0;
 
-    /// <summary>Opacity as a percentage, 0-100.</summary>
-    public double Opacity { get; init; } = 100.0;
-
     /// <summary>Below this drag size (in either axis, PDF points) a click/drag is treated as point text.</summary>
     public const double MinTextBoxPt = 12.0;
 
@@ -43,7 +40,6 @@ public sealed record TextStyle
         var fontSize = FontSize is >= 1.0 and <= 4096.0 ? FontSize : 12.0;
         var padding = Padding is >= 0.0 and <= 256.0 ? Padding : 2.0;
         var lineSpacing = LineSpacing is > 0.0 and <= 10.0 ? LineSpacing : 1.25;
-        var opacity = Math.Clamp(Opacity, 0.0, 100.0);
         var color = IsValidHexColor(Color) ? Color : "#000000";
         var fontName = string.IsNullOrWhiteSpace(FontName) ? "Arial" : FontName;
 
@@ -52,7 +48,6 @@ public sealed record TextStyle
             FontSize = fontSize,
             Padding = padding,
             LineSpacing = lineSpacing,
-            Opacity = opacity,
             Color = color,
             FontName = fontName,
         };

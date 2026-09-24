@@ -2,8 +2,478 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+        xmlns:views="using:PDFDocumentStudio.App.Views"
+        xmlns:vm="using:PDFDocumentStudio.App.ViewModels"
+        xmlns:conv="using:Avalonia.Data.Converters"
+        mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="800"
         x:Class="PDFDocumentStudio.App.MainWindow"
-        Title="PDFDocumentStudio.App">
-    Welcome to Avalonia!
+        x:Name="RootWindow"
+        x:DataType="vm:MainViewModel"
+        Title="PDF Document Studio"
+        Icon="avares://PDFDocumentStudio.App/Assets/logo.ico"
+        KeyDown="OnWindowKeyDown"
+        Background="{StaticResource AppBackgroundBrush}"
+        Foreground="{StaticResource TextPrimaryBrush}"
+        Width="1280" Height="800">
+
+    <Window.Styles>
+        <Style Selector="Button.ToolBtn">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.ToolBtn.accent">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button.IconBtn">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.NavIconBtn">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.NavIconBtn.active">
+            <Setter Property="Foreground" Value="{StaticResource AccentSoftBrush}" />
+        </Style>
+        <Style Selector="Border.PageThumb">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1.5" />
+        </Style>
+        <Style Selector="Border.PageThumb.active">
+            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Background" Value="{StaticResource AccentFillBrush}" />
+        </Style>
+        <Style Selector="Border.PageThumb.selected">
+            <Setter Property="BorderBrush" Value="#F59E0B" />
+        </Style>
+        <Style Selector="TextBox.GlassInput, NumericUpDown.GlassInput, AutoCompleteBox.GlassInput">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}" />
+        </Style>
+        <Style Selector="Border.Chip">
+            <Setter Property="Background" Value="{StaticResource ChipBackgroundBrush}" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="10,4" />
+        </Style>
+        <Style Selector="TextBox.chipInput">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style Selector="Button.ChipCloseBtn">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.SecondaryBtn">
+            <Setter Property="Background" Value="{StaticResource ChipBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource AccentSoftBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="8" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.PrimaryBtn">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="8,10" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="TextBlock.PanelLabel">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+        </Style>
+        <Style Selector="TextBlock.SectionTitle">
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="LetterSpacing" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+        </Style>
+        <Style Selector="Menu">
+            <Setter Property="Background" Value="{StaticResource PanelBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="FontSize" Value="12.5" />
+        </Style>
+        <Style Selector="MenuItem">
+            <Setter Property="Padding" Value="10,6" />
+        </Style>
+        <Style Selector="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+        </Style>
+        <Style Selector="Expander">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto">
+
+        <Menu Grid.Row="0">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open PDF..." Click="OnOpenPdf" />
+                <MenuItem Header="Import _Multiple PDFs..." Click="OnImportPdfs" />
+                <Separator />
+                <MenuItem Header="Open _Project..." Click="OnOpenProject" />
+                <MenuItem Header="_Save Project" Click="OnSaveProject" />
+                <MenuItem Header="Save Project _As..." Click="OnSaveProjectAs" />
+                <Separator />
+                <MenuItem Header="_Export PDF..." Click="OnExportPdf" />
+                <MenuItem Header="_Compress PDF..." Click="OnCompressPdf" />
+                <Separator />
+                <MenuItem Header="E_xit" Click="OnExit" />
+            </MenuItem>
+            <MenuItem Header="_Edit">
+                <MenuItem Header="_Undo" Click="OnUndo" />
+                <MenuItem Header="_Redo" Click="OnRedo" />
+                <Separator />
+                <MenuItem Header="_Delete" Click="OnDelete" />
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="Zoom _In" Click="OnZoomIn" />
+                <MenuItem Header="Zoom _Out" Click="OnZoomOut" />
+                <MenuItem Header="_Actual Size" Click="OnZoomReset" />
+            </MenuItem>
+            <MenuItem Header="_Insert">
+                <MenuItem Header="Add _Text Box" Click="OnAddText" />
+                <MenuItem Header="Add _Image..." Click="OnAddImage" />
+            </MenuItem>
+            <MenuItem Header="_Pages">
+                <MenuItem Header="_Delete Current Page" Click="OnDeletePage" />
+            </MenuItem>
+        </Menu>
+
+        <Border Grid.Row="1" Background="{StaticResource PanelBackgroundBrush}" Padding="10,6" BorderBrush="{StaticResource BorderBrush1}" BorderThickness="0,1,0,1">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Classes="ToolBtn accent" Content="📂 Open PDF" Click="OnOpenPdf" />
+                <Button Classes="ToolBtn" Content="💾 Save" Click="OnSaveProject" />
+                <Button Classes="ToolBtn accent" Content="📤 Export PDF" Click="OnExportPdf" />
+                <Button Classes="ToolBtn" Content="↩" ToolTip.Tip="Undo (Ctrl+Z)" Click="OnUndo" />
+                <Button Classes="ToolBtn" Content="↪" ToolTip.Tip="Redo (Ctrl+Y)" Click="OnRedo" />
+                <Rectangle Width="1" Height="20" Fill="{StaticResource BorderBrush2}" Margin="2,0" />
+                <Button Classes="ToolBtn" Content="➕ Text" Click="OnAddText" />
+                <Button Classes="ToolBtn" Content="🖼 Image" Click="OnAddImage" />
+                <Button Classes="ToolBtn" Content="📋" ToolTip.Tip="Copy (Ctrl+C)" Click="OnContextCopy" IsEnabled="{Binding SelectedObject, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+                <Button Classes="ToolBtn" Content="📌" ToolTip.Tip="Paste (Ctrl+V)" Click="OnContextPaste" IsEnabled="{Binding HasClipboardContent}" />
+                <Button Classes="ToolBtn" Content="🗑" ToolTip.Tip="Delete (Del)" Click="OnDelete" IsEnabled="{Binding SelectedObject, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+                <Rectangle Width="1" Height="20" Fill="{StaticResource BorderBrush2}" Margin="2,0" />
+                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <Button Classes="IconBtn" Content="❮" ToolTip.Tip="Previous page" Click="OnPrevPage" />
+                    <TextBlock VerticalAlignment="Center" Margin="2,0" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12">
+                        <Run Text="{Binding CurrentPageNumber}" /> of <Run Text="{Binding Pages.Count}" />
+                    </TextBlock>
+                    <Button Classes="IconBtn" Content="❯" ToolTip.Tip="Next page" Click="OnNextPage" />
+                    <Button Classes="IconBtn" Content="−" Click="OnZoomOut" Margin="8,0,0,0" />
+                    <TextBox x:Name="ZoomTextBox" Text="{Binding ZoomPercentText}"
+                             VerticalAlignment="Center" VerticalContentAlignment="Center" HorizontalContentAlignment="Center"
+                             Margin="4,0" Height="26" MinHeight="26"
+                             Foreground="{StaticResource TextSecondaryBrush}" Background="{StaticResource ControlBackgroundBrush}" BorderThickness="0" CornerRadius="4"
+                             FontSize="12" Width="46" TextAlignment="Center" Padding="4,0"
+                             KeyDown="OnZoomTextKeyDown" LostFocus="OnZoomTextLostFocus" />
+                    <Button Classes="IconBtn" Content="+" Click="OnZoomIn" ToolTip.Tip="Zoom (also Ctrl+Mouse Wheel)" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="2" ColumnDefinitions="Auto,*,320">
+
+            <Border Grid.Column="0" Background="{StaticResource PanelBackgroundBrush}" Width="176" BorderBrush="{StaticResource BorderBrush1}" BorderThickness="0,0,1,0">
+                <DockPanel Margin="8">
+                    <TextBlock DockPanel.Dock="Top" Classes="SectionTitle" Text="PAGES" Margin="2,4,0,6" FontSize="11" />
+                    <ScrollViewer>
+                        <ItemsControl x:Name="PagesItemsControl" ItemsSource="{Binding Pages}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Vertical" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:PageViewModel">
+                                    <Border Classes="PageThumb" Classes.active="{Binding IsCurrent}" Classes.selected="{Binding IsSelected}"
+                                            HorizontalAlignment="Stretch" Height="150" Margin="2,2,6,2" PointerPressed="OnThumbnailPointerPressed"
+                                            DragDrop.AllowDrop="True"
+                                            DragDrop.DragOver="OnThumbnailDragOver"
+                                            DragDrop.Drop="OnThumbnailDrop">
+                                        <Border.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Move Up" Click="OnMovePageUp" />
+                                                <MenuItem Header="Move Down" Click="OnMovePageDown" />
+                                                <MenuItem Header="Move to Start" Click="OnMovePageToStart" />
+                                                <MenuItem Header="Move to End" Click="OnMovePageToEnd" />
+                                                <Separator />
+                                                <MenuItem Header="Delete Page" Click="OnDeletePageContext" />
+                                            </ContextMenu>
+                                        </Border.ContextMenu>
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Bottom" Text="{Binding DisplayNumber}"
+                                                       HorizontalAlignment="Center" Margin="0,0,0,2" FontSize="10"
+                                                       Foreground="{StaticResource TextSecondaryBrush}" />
+                                            <Image Source="{Binding ThumbnailBitmap}" Stretch="Uniform" Margin="3" />
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <Grid Grid.Column="1" Background="{StaticResource CanvasSurroundBrush}">
+                <!-- One continuous, always-fully-interactive document: every page renders its own
+                     footer + objects and can be edited directly, without switching page or view
+                     mode. Fixes the old "footer/text/image only visible on one page" behavior. -->
+                <ScrollViewer x:Name="DocumentScrollViewer" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="20"
+                              IsVisible="{Binding IsDocumentOpen}">
+                    <ItemsControl x:Name="DocumentItemsControl" ItemsSource="{Binding Pages}" HorizontalAlignment="Center">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Vertical" Spacing="18" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:PageViewModel">
+                                <Border Background="White" CornerRadius="4" BoxShadow="0 6 20 0 #55000000">
+                                    <views:PageCanvasControl Page="{Binding}"
+                                                              Objects="{Binding Objects}"
+                                                              Footer="{Binding FooterOverlay}"
+                                                              ScreenScale="{Binding #RootWindow.DataContext.ScreenScale}"
+                                                              Owner="{Binding #RootWindow.DataContext}"
+                                                              TextLayout="{Binding #RootWindow.DataContext.Services.TextLayout}"
+                                                              Width="{Binding DisplayWidth}"
+                                                              Height="{Binding DisplayHeight}">
+                                        <views:PageCanvasControl.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Copy" InputGesture="Ctrl+C" Click="OnContextCopy" />
+                                                <MenuItem Header="Paste" InputGesture="Ctrl+V" Click="OnContextPaste" />
+                                                <MenuItem Header="Paste in Place" Click="OnContextPasteInPlace" />
+                                                <MenuItem Header="Duplicate" Click="OnContextDuplicate" />
+                                                <MenuItem Header="Bring to Front" Click="OnContextBringToFront" />
+                                                <MenuItem Header="Send to Back" Click="OnContextSendToBack" />
+                                                <MenuItem Header="Delete Object" Click="OnContextDeleteObject" />
+                                                <Separator />
+                                                <MenuItem Header="Delete Page" Click="OnDeletePage" />
+                                            </ContextMenu>
+                                        </views:PageCanvasControl.ContextMenu>
+                                    </views:PageCanvasControl>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <StackPanel IsVisible="{Binding !IsDocumentOpen}" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14" MaxWidth="280">
+                    <Border Background="{StaticResource PanelBackgroundBrush}" CornerRadius="32" Width="64" Height="64" HorizontalAlignment="Center" ClipToBounds="True">
+                        <Image Source="avares://PDFDocumentStudio.App/Assets/logo.png" Width="56" Height="56" Stretch="Uniform" />
+                    </Border>
+                    <TextBlock Text="No document open" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource TextPrimaryBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="Open a PDF to start viewing, adding footers, and editing." FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}" TextAlignment="Center" TextWrapping="Wrap" />
+                    <Button Classes="ToolBtn accent" Content="📂 Open PDF" Click="OnOpenPdf" HorizontalAlignment="Center" Margin="0,6,0,0" />
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Column="2" Width="{Binding RightPanelWidth}" Background="{StaticResource PanelBackgroundBrush}" BorderBrush="{StaticResource BorderBrush1}" BorderThickness="1,0,0,0">
+              <Grid RowDefinitions="Auto,Auto,*">
+                <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="8,8,8,0" ColumnSpacing="4">
+                    <Grid Grid.Column="0" ColumnDefinitions="*,*,*" ColumnSpacing="3">
+                        <Button Grid.Column="0" Classes="ToolBtn" Classes.accent="{Binding ShowFooterTab}" Content="Footer" FontSize="11"
+                                HorizontalContentAlignment="Center" Padding="6,5" Click="OnSelectFooterTab" IsVisible="{Binding !IsRightPanelCollapsed}" />
+                        <Button Grid.Column="1" Classes="ToolBtn" Classes.accent="{Binding ShowFileOrganizerTab}" Content="Files" FontSize="11"
+                                HorizontalContentAlignment="Center" Padding="6,5" Click="OnSelectFileOrganizerTab" IsVisible="{Binding !IsRightPanelCollapsed}" />
+                        <Button Grid.Column="2" Classes="ToolBtn" Classes.accent="{Binding ShowToolsTab}" Content="Tools" FontSize="11"
+                                HorizontalContentAlignment="Center" Padding="6,5" Click="OnSelectToolsTab" IsVisible="{Binding !IsRightPanelCollapsed}" />
+                    </Grid>
+                    <Button Grid.Column="1" Classes="IconBtn" Content="{Binding RightPanelToggleGlyph}" Width="26" Height="26" Click="OnToggleRightPanelCollapse" ToolTip.Tip="Collapse panel" />
+                </Grid>
+                <Rectangle Grid.Row="1" Height="1" Fill="{StaticResource BorderBrush1}" Margin="0,7,0,0" IsVisible="{Binding !IsRightPanelCollapsed}" />
+
+                <Grid Grid.Row="2" IsVisible="{Binding !IsRightPanelCollapsed}">
+                <ScrollViewer IsVisible="{Binding ShowFooterTab}" Padding="10,8">
+                    <StackPanel Spacing="8">
+                        <Expander Header="Saved Drafts" Padding="0">
+                            <StackPanel Spacing="4" Margin="0,6,0,0">
+                                <ComboBox ItemsSource="{Binding FooterDraftNames}" SelectedItem="{Binding SelectedFooterDraftName}"
+                                          HorizontalAlignment="Stretch" Height="28" FontSize="12" PlaceholderText="Choose a preset..." />
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="4">
+                                    <Button Grid.Column="0" Classes="SecondaryBtn" Content="Load" FontSize="11" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnLoadFooterDraft" />
+                                    <Button Grid.Column="1" Classes="SecondaryBtn" Content="Delete" FontSize="11" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnDeleteFooterDraft" />
+                                </Grid>
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4">
+                                    <TextBox Grid.Column="0" x:Name="NewFooterDraftNameBox" Classes="GlassInput" Height="28" FontSize="12" PlaceholderText="New preset name" />
+                                    <Button Grid.Column="1" Classes="SecondaryBtn" Content="Save" FontSize="11" Padding="8,4" Click="OnSaveFooterDraft" />
+                                </Grid>
+                            </StackPanel>
+                        </Expander>
+
+                        <Expander Header="Typography &amp; Spacing" Padding="0">
+                            <StackPanel Spacing="6" Margin="0,6,0,0">
+                                <Grid ColumnDefinitions="*,70" ColumnSpacing="4">
+                                    <AutoCompleteBox Grid.Column="0" Classes="GlassInput" Height="28" FontSize="12" Text="{Binding FooterFontName}"
+                                                      ItemsSource="{Binding AvailableFontNames}" FilterMode="Contains"
+                                                      MinimumPrefixLength="0" PlaceholderText="Font" />
+                                    <NumericUpDown Grid.Column="1" Classes="GlassInput" Height="28" FontSize="12" Value="{Binding FooterFontSize}" Minimum="6" Maximum="72" Increment="1" />
+                                </Grid>
+                                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+                                    <TextBlock Grid.Column="0" Classes="PanelLabel" Text="Gap (pt)" VerticalAlignment="Center" FontSize="11" />
+                                    <NumericUpDown Grid.Column="1" Classes="GlassInput" Height="28" FontSize="12" Value="{Binding FooterGapPt}" Minimum="0" Maximum="300" Increment="2" />
+                                </Grid>
+                                <WrapPanel>
+                                    <CheckBox Content="Compress to fit" FontSize="11" IsChecked="{Binding FooterCompressContent}" Margin="0,0,10,0" />
+                                    <CheckBox Content="Header row" FontSize="11" IsChecked="{Binding FooterShowHeader}" Margin="0,0,10,0" />
+                                    <CheckBox Content="Borders" FontSize="11" IsChecked="{Binding FooterShowBorders}" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Expander>
+
+                        <!-- A real semantic table: named columns (e.g. "Name" | "Designation")
+                             each with its own width/alignment, and any number of data rows
+                             underneath — not a generic "Col N / Line 1 / Line 2" grid. -->
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" Classes="SectionTitle" Text="FOOTER TABLE" VerticalAlignment="Center" FontSize="11" />
+                            <NumericUpDown Grid.Column="1" Classes="GlassInput" Value="{Binding FooterColumnCount}" Minimum="1" Maximum="10" Increment="1" Width="76" Height="26" FontSize="11" ToolTip.Tip="Column count" />
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding FooterColumns}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:FooterColumnEdit">
+                                    <StackPanel Width="108" Spacing="2" Margin="0,0,4,0">
+                                        <TextBox Classes="GlassInput" Height="26" FontSize="11" Text="{Binding Header}" PlaceholderText="Column name" />
+                                        <ComboBox Height="24" FontSize="10" SelectedIndex="{Binding Align, Converter={StaticResource AlignToIndexConverter}}" HorizontalAlignment="Stretch">
+                                            <ComboBoxItem Content="Left" />
+                                            <ComboBoxItem Content="Center" />
+                                            <ComboBoxItem Content="Right" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <ItemsControl ItemsSource="{Binding FooterRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:FooterRowEdit">
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,3">
+                                        <ItemsControl Grid.Column="0" ItemsSource="{Binding Cells}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:FooterCellEdit">
+                                                    <TextBox Classes="GlassInput" Width="108" Height="26" FontSize="11" Margin="0,0,4,0" Text="{Binding Text}" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <Button Grid.Column="1" Classes="ChipCloseBtn" Content="✕" VerticalAlignment="Center"
+                                                Click="OnRemoveFooterRow" Tag="{Binding}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Classes="SecondaryBtn" Content="+ Add Row" FontSize="11" Padding="6,4" HorizontalAlignment="Left" Click="OnAddFooterRow" />
+
+                        <StackPanel Spacing="4" Margin="0,4,0,0">
+                            <TextBlock Classes="PanelLabel" Text="Apply to" FontSize="11" />
+                            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="3">
+                                <Button Grid.Column="0" Classes="ToolBtn" Classes.accent="{Binding IsFooterScopeAll}" Content="All" FontSize="11" Padding="4,5"
+                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnSetFooterScopeAll" />
+                                <Button Grid.Column="1" Classes="ToolBtn" Classes.accent="{Binding IsFooterScopeSelected}" Content="Selected" FontSize="11" Padding="4,5"
+                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnSetFooterScopeSelected" />
+                                <Button Grid.Column="2" Classes="ToolBtn" Classes.accent="{Binding IsFooterScopeRange}" Content="Range" FontSize="11" Padding="4,5"
+                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnSetFooterScopeRange" />
+                            </Grid>
+                            <TextBox Classes="GlassInput" Height="26" FontSize="11" Text="{Binding FooterRangeText}" PlaceholderText="e.g. 1-3, 7 or all"
+                                     IsVisible="{Binding IsFooterScopeRange}" />
+                        </StackPanel>
+
+                        <Button Classes="ToolBtn accent" Content="Apply Footer" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,4,0,0" Click="OnApplyFooter" />
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="4">
+                            <Button Grid.Column="0" Classes="ToolBtn accent" Content="Export" HorizontalContentAlignment="Center" Click="OnExportPdf" />
+                            <Button Grid.Column="1" Classes="SecondaryBtn" Content="Compress" HorizontalContentAlignment="Center" Click="OnCompressPdf" />
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer IsVisible="{Binding ShowFileOrganizerTab}" Padding="10,8">
+                    <StackPanel Spacing="6">
+                        <ItemsControl x:Name="FileGroupsItemsControl" ItemsSource="{Binding FileGroups}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:FileGroupViewModel">
+                                    <Border Classes="Chip" CornerRadius="6" Margin="0,0,0,4" Padding="6"
+                                            PointerPressed="OnFileGroupPointerPressed"
+                                            DragDrop.AllowDrop="True" DragDrop.DragOver="OnFileGroupDragOver" DragDrop.Drop="OnFileGroupDrop">
+                                        <Border.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Remove This File" Click="OnRemoveFileGroupContext" />
+                                            </ContextMenu>
+                                        </Border.ContextMenu>
+                                        <Grid ColumnDefinitions="32,*,Auto">
+                                            <Image Grid.Column="0" Source="{Binding FirstPage.ThumbnailBitmap}" Width="28" Stretch="Uniform" />
+                                            <StackPanel Grid.Column="1" Margin="6,0" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding FileName}" FontSize="11" Foreground="{StaticResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding PageCount, StringFormat='{}{0} page(s)'}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="2" Classes="ChipCloseBtn" Content="✕" Click="OnRemoveFileGroup" VerticalAlignment="Center" />
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer IsVisible="{Binding ShowToolsTab}" Padding="10,8">
+                    <StackPanel Spacing="6">
+                        <Button Classes="ToolBtn" Content="Add Text" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnAddText" />
+                        <Button Classes="ToolBtn" Content="Add Image" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnAddImage" />
+                        <Button Classes="ToolBtn accent" Content="Export PDF" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,6,0,0" Click="OnExportPdf" />
+                        <Button Classes="SecondaryBtn" Content="Compress PDF" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Click="OnCompressPdf" />
+                    </StackPanel>
+                </ScrollViewer>
+                </Grid>
+              </Grid>
+            </Border>
+
+        </Grid>
+
+        <Border Grid.Row="3" Background="{StaticResource PanelDarkBrush}" Padding="14,6" BorderBrush="{StaticResource BorderBrush1}" BorderThickness="0,1,0,0">
+            <TextBlock Text="{Binding StatusMessage}" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+        </Border>
+
+        <Border Grid.Row="0" Grid.RowSpan="4" Background="#B0000000" IsVisible="{Binding IsBusy}">
+            <Border Background="{StaticResource PanelBackgroundBrush}" CornerRadius="10" Padding="24,20"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" BoxShadow="0 6 20 0 #66000000">
+                <StackPanel Spacing="10" Width="220">
+                    <ProgressBar IsIndeterminate="True" Height="4" />
+                    <TextBlock Text="{Binding BusyMessage}" HorizontalAlignment="Center" FontSize="13" Foreground="{StaticResource TextPrimaryBrush}" />
+                </StackPanel>
+            </Border>
+        </Border>
+
+    </Grid>
 </Window>
